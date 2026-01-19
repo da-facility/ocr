@@ -172,7 +172,8 @@ class SessionManager:
 
     def create_session(self, camera_index: int, camera_name: str = "") -> Session:
         session_id = str(uuid.uuid4())[:8]
-        session = Session(id=session_id, camera_index=camera_index, camera_name=camera_name or f"Camera {camera_index}")
+        default_name = f"Camera {camera_index + 1:02d}"
+        session = Session(id=session_id, camera_index=camera_index, camera_name=camera_name or default_name)
         self.sessions[session_id] = session
         self.save_sessions()
         return session
