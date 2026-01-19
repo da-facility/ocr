@@ -794,7 +794,85 @@ def parse_args():
         default=None,
         help="Directory to save OCR results. Creates path/[session_id]/[region_name].txt files"
     )
+    parser.add_argument(
+        "--clean-logs",
+        action="store_true",
+        help="Disable ANSI color codes in logs (useful for Windows CMD/PowerShell)"
+    )
     return parser.parse_args()
+
+
+def should_use_clean_logs() -> bool:
+    """
+    Auto-detect if we should disable ANSI color codes.
+    Returns True for Windows terminals that don't support ANSI.
+    """
+    if sys.platform != "win32":
+        return False
+    
+    # Check if running in Windows Terminal or other modern terminal
+    # that supports ANSI codes via WT_SESSION or TERM_PROGRAM
+    if os.environ.get("WT_SESSION"):
+        return False  # Windows Terminal supports ANSI
+    if os.environ.get("TERM_PROGRAM"):
+        return False  # Modern terminal (e.g., VSCode integrated terminal)
+    
+    # Check if virtual terminal processing is enabled
+    # This is typically NOT enabled in legacy CMD/PowerShell
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        # STD_OUTPUT_HANDLE = -11
+        handle = kernel32.GetStdHandle(-11)
+        mode = ctypes.c_ulong()
+        if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            # ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+            if mode.value & 0x0004:
+                return False  # VT processing enabled
+    except Exception:
+        pass
+    
+    # Default: assume legacy Windows terminal without ANSI support
+    return True
+
+
+def configure_logging(clean_logs: bool):
+    """Configure logging to optionally disable ANSI color codes."""
+    import logging
+    
+    if clean_logs:
+        # Use a simple formatter without colors
+        log_config = {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "default": {
+                    "format": "%(levelname)s:     %(message)s",
+                },
+                "access": {
+                    "format": '%(levelname)s:     %(client_addr)s - "%(request_line)s" %(status_code)s',
+                },
+            },
+            "handlers": {
+                "default": {
+                    "formatter": "default",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stderr",
+                },
+                "access": {
+                    "formatter": "access",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stdout",
+                },
+            },
+            "loggers": {
+                "uvicorn": {"handlers": ["default"], "level": "INFO", "propagate": False},
+                "uvicorn.error": {"level": "INFO"},
+                "uvicorn.access": {"handlers": ["access"], "level": "INFO", "propagate": False},
+            },
+        }
+        return log_config
+    return None
 
 
 def open_browser(host: str, port: int):
@@ -897,6 +975,10 @@ if __name__ == "__main__":
     
     args = parse_args()
     
+    # Determine if we should use clean (no ANSI) logs
+    use_clean_logs = args.clean_logs or should_use_clean_logs()
+    log_config = configure_logging(use_clean_logs)
+    
     # Setup static files for production
     has_static = setup_static_files()
     
@@ -904,6 +986,8 @@ if __name__ == "__main__":
     print(f"Host: {args.host}")
     print(f"Port: {args.port}")
     print(f"Static files: {'Yes' if has_static else 'No (run frontend dev server separately)'}")
+    if use_clean_logs:
+        print("Clean logs: Enabled (ANSI color codes disabled)")
     
     # Setup file writer if directory specified
     if args.directory:
@@ -913,4 +997,4 @@ if __name__ == "__main__":
     if has_static and not args.no_browser:
         open_browser(args.host, args.port)
     
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=args.port, log_config=log_config)
