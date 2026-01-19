@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -13,6 +13,9 @@ from typing import Optional
 import asyncio
 import json
 import mimetypes
+import multiprocessing as mp
+import time
+import atexit
 
 # Fix MIME types for Windows (Win10 registry often has .js as text/plain)
 mimetypes.add_type("application/javascript", ".js")
@@ -21,11 +24,61 @@ mimetypes.add_type("text/css", ".css")
 mimetypes.add_type("application/json", ".json")
 mimetypes.add_type("image/svg+xml", ".svg")
 
-from sessions import session_manager
-from camera import camera_manager
-from processing import process_frame_perspective, process_frame_full, frame_to_jpeg, get_color_at_point
-from ocr import ocr_manager
-from glyphs import get_detected_glyphs_for_training, combine_glyphs_by_indices, GLYPH_SIZE
+from ipc import IPCClient, Command, create_ipc_pair
+from worker import start_worker_process
+from processing import frame_to_jpeg
+
+# Global worker process and IPC client
+_worker_process: Optional[mp.Process] = None
+_ipc_client: Optional[IPCClient] = None
+
+
+def get_ipc_client() -> IPCClient:
+    """Get the global IPC client, raising error if not initialized."""
+    global _ipc_client
+    if _ipc_client is None:
+        raise RuntimeError("Worker not initialized")
+    return _ipc_client
+
+
+def ensure_worker_running():
+    """Check if worker is running and restart if needed."""
+    global _worker_process, _ipc_client
+    
+    if _worker_process is None or not _worker_process.is_alive():
+        print("Starting/restarting worker process...")
+        _worker_process, conn = start_worker_process()
+        _ipc_client = IPCClient(conn, timeout=2.0)
+        
+        # Wait for worker to be ready
+        for _ in range(50):  # 5 seconds max
+            if _ipc_client.ping():
+                print("Worker process ready")
+                return
+            time.sleep(0.1)
+        
+        print("Warning: Worker process not responding to ping")
+
+
+def shutdown_worker():
+    """Shutdown the worker process."""
+    global _worker_process, _ipc_client
+    
+    if _ipc_client is not None:
+        try:
+            _ipc_client.send_command(Command.SHUTDOWN, timeout=2.0)
+        except Exception:
+            pass
+        _ipc_client.close()
+        _ipc_client = None
+    
+    if _worker_process is not None:
+        _worker_process.join(timeout=3.0)
+        if _worker_process.is_alive():
+            _worker_process.terminate()
+            _worker_process.join(timeout=1.0)
+        _worker_process = None
+
 
 # Determine paths based on whether running as exe or script
 def get_base_path():
@@ -45,59 +98,21 @@ def get_static_path():
     return os.path.join(os.path.dirname(base), 'frontend', 'dist')
 
 
-def start_session_ocr(session):
-    """Helper to start OCR for a session."""
-    def get_processed_frame():
-        sess = session_manager.get_session(session.id)
-        if sess is None:
-            return None
-        cam = camera_manager.get_camera(sess.camera_index)
-        if cam is None:
-            return None
-        frame = cam.get_frame()
-        if frame is None:
-            return None
-        return process_frame_full(
-            frame,
-            perspective_points=sess.perspective_points,
-            output_size=sess.perspective_output_size,
-            color_filters=[cf.to_dict() for cf in sess.color_filters],
-            erosion_kernel=sess.erosion_kernel,
-            dilation_kernel=sess.dilation_kernel
-        )
-    
-    def get_regions():
-        sess = session_manager.get_session(session.id)
-        if sess is None:
-            return []
-        return [r.to_dict() for r in sess.ocr_regions]
-    
-    def get_glyphs():
-        sess = session_manager.get_session(session.id)
-        if sess is None:
-            return []
-        return [g.to_dict() for g in sess.glyphs]
-    
-    ocr_manager.start_ocr(session.id, get_processed_frame, get_regions, get_glyphs)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown events."""
     # Startup
     print("Starting OCR Camera Backend...")
-    for session in session_manager.list_sessions():
-        camera = camera_manager.acquire_camera(session.camera_index)
-        if camera:
-            start_session_ocr(session)
-            print(f"Restored session {session.id} with camera {session.camera_index}")
-        else:
-            print(f"Failed to restore session {session.id}: camera {session.camera_index} not available")
+    ensure_worker_running()
+    
+    # Register cleanup
+    atexit.register(shutdown_worker)
     
     yield  # App is running
     
     # Shutdown
     print("Shutting down OCR Camera Backend...")
+    shutdown_worker()
 
 
 app = FastAPI(title="OCR Camera Backend", lifespan=lifespan)
@@ -160,208 +175,223 @@ class OcrRegionUpdateRequest(BaseModel):
 @app.get("/api/cameras")
 async def list_cameras():
     """List available camera devices."""
-    cameras = camera_manager.list_available_cameras()
-    return {"cameras": cameras}
+    client = get_ipc_client()
+    response = client.send_command(Command.LIST_CAMERAS, timeout=5.0)
+    if not response.success:
+        raise HTTPException(status_code=500, detail=response.error or "Failed to list cameras")
+    return {"cameras": response.data}
 
 
 @app.get("/api/sessions")
 async def list_sessions():
     """List all active sessions."""
-    sessions = session_manager.list_sessions()
-    return {"sessions": [s.to_dict() for s in sessions]}
+    client = get_ipc_client()
+    response = client.send_command(Command.LIST_SESSIONS)
+    if not response.success:
+        raise HTTPException(status_code=500, detail=response.error or "Failed to list sessions")
+    return {"sessions": response.data}
 
 
 @app.post("/api/sessions")
 async def create_session(request: CreateSessionRequest):
     """Create a new capture session."""
-    camera = camera_manager.acquire_camera(request.camera_index)
-    if camera is None:
-        raise HTTPException(status_code=400, detail="Failed to open camera")
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.CREATE_SESSION,
+        camera_index=request.camera_index,
+        camera_name=request.camera_name,
+        timeout=5.0
+    )
     
-    session = session_manager.create_session(request.camera_index, request.camera_name)
-    start_session_ocr(session)
+    if not response.success or response.data is None:
+        raise HTTPException(status_code=400, detail=response.error or "Failed to open camera")
     
-    # Subscribe to file writer if configured
+    # Subscribe file writer if configured
     file_writer = get_file_writer()
     if file_writer:
-        file_writer.subscribe_to_session(session.id)
+        file_writer.subscribe_to_session(response.data['id'])
     
-    return session.to_dict()
+    return response.data
 
 
 @app.get("/api/sessions/{session_id}")
 async def get_session(session_id: str):
     """Get session details."""
-    session = session_manager.get_session(session_id)
-    if session is None:
+    client = get_ipc_client()
+    response = client.send_command(Command.GET_SESSION, session_id=session_id)
+    if not response.success or response.data is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    return session.to_dict()
+    return response.data
 
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str):
     """Delete a session and release the camera."""
-    session = session_manager.get_session(session_id)
-    if session is None:
+    client = get_ipc_client()
+    response = client.send_command(Command.DELETE_SESSION, session_id=session_id)
+    if not response.success:
         raise HTTPException(status_code=404, detail="Session not found")
-    
-    ocr_manager.stop_ocr(session_id)
-    camera_manager.release_camera(session.camera_index)
-    session_manager.delete_session(session_id)
-    
     return {"status": "deleted"}
 
 
 @app.put("/api/sessions/{session_id}/perspective")
 async def update_perspective(session_id: str, request: PerspectiveRequest):
     """Update perspective correction points and output size."""
-    session = session_manager.get_session(session_id)
-    if session is None:
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.UPDATE_PERSPECTIVE,
+        session_id=session_id,
+        points=request.points,
+        output_size=request.output_size
+    )
+    if not response.success or response.data is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    
-    points = None
-    if request.points and len(request.points) == 4:
-        points = [(p[0], p[1]) for p in request.points]
-    
-    output_size = None
-    if request.output_size and len(request.output_size) == 2:
-        output_size = tuple(request.output_size)
-    
-    session_manager.update_perspective(session_id, points, output_size)
-    updated = session_manager.get_session(session_id)
-    return {
-        "status": "updated", 
-        "perspective_points": updated.perspective_points,
-        "perspective_output_size": list(updated.perspective_output_size)
-    }
+    return response.data
 
 
 @app.post("/api/sessions/{session_id}/color-filters")
 async def add_color_filter(session_id: str, request: ColorFilterRequest):
     """Add a new color filter."""
-    session = session_manager.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    cf = session_manager.add_color_filter(session_id, request.bgr, request.tolerance)
-    if cf is None:
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.ADD_COLOR_FILTER,
+        session_id=session_id,
+        bgr=request.bgr,
+        tolerance=request.tolerance
+    )
+    if not response.success or response.data is None:
         raise HTTPException(status_code=400, detail="Failed to add color filter")
-    
-    return cf.to_dict()
+    return response.data
 
 
 @app.put("/api/sessions/{session_id}/color-filters/{filter_id}")
 async def update_color_filter(session_id: str, filter_id: str, request: ColorFilterUpdateRequest):
     """Update a color filter's tolerance."""
-    if not session_manager.update_color_filter(session_id, filter_id, request.tolerance):
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.UPDATE_COLOR_FILTER,
+        session_id=session_id,
+        filter_id=filter_id,
+        tolerance=request.tolerance
+    )
+    if not response.success or not response.data:
         raise HTTPException(status_code=404, detail="Session or filter not found")
-    
     return {"status": "updated"}
 
 
 @app.delete("/api/sessions/{session_id}/color-filters/{filter_id}")
 async def delete_color_filter(session_id: str, filter_id: str):
     """Delete a color filter."""
-    if not session_manager.delete_color_filter(session_id, filter_id):
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.DELETE_COLOR_FILTER,
+        session_id=session_id,
+        filter_id=filter_id
+    )
+    if not response.success or not response.data:
         raise HTTPException(status_code=404, detail="Session or filter not found")
-    
     return {"status": "deleted"}
 
 
 @app.delete("/api/sessions/{session_id}/color-filters")
 async def clear_color_filters(session_id: str):
     """Clear all color filters."""
-    if not session_manager.clear_color_filters(session_id):
+    client = get_ipc_client()
+    response = client.send_command(Command.CLEAR_COLOR_FILTERS, session_id=session_id)
+    if not response.success or not response.data:
         raise HTTPException(status_code=404, detail="Session not found")
-    
     return {"status": "cleared"}
 
 
 @app.put("/api/sessions/{session_id}/morphology")
 async def update_morphology(session_id: str, request: MorphologyRequest):
     """Update morphology settings."""
-    session = session_manager.get_session(session_id)
-    if session is None:
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.UPDATE_MORPHOLOGY,
+        session_id=session_id,
+        erosion_kernel=request.erosion_kernel,
+        dilation_kernel=request.dilation_kernel
+    )
+    if not response.success or response.data is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    
-    session_manager.update_morphology(session_id, request.erosion_kernel, request.dilation_kernel)
-    updated = session_manager.get_session(session_id)
-    return {
-        "status": "updated",
-        "erosion_kernel": updated.erosion_kernel,
-        "dilation_kernel": updated.dilation_kernel
-    }
+    return response.data
 
 
 @app.post("/api/sessions/{session_id}/pick-color")
 async def pick_color(session_id: str, request: PickColorRequest):
     """Pick a color from the perspective-corrected frame at given coordinates."""
-    session = session_manager.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    camera = camera_manager.get_camera(session.camera_index)
-    if camera is None:
-        raise HTTPException(status_code=400, detail="Camera not available")
-    
-    frame = camera.get_frame()
-    if frame is None:
-        raise HTTPException(status_code=400, detail="No frame available")
-    
-    perspective_frame = process_frame_perspective(
-        frame, 
-        session.perspective_points,
-        session.perspective_output_size
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.PICK_COLOR,
+        session_id=session_id,
+        x=request.x,
+        y=request.y
     )
-    
-    bgr = get_color_at_point(perspective_frame, request.x, request.y)
-    
-    return {"bgr": bgr}
+    if not response.success or response.data is None:
+        raise HTTPException(status_code=400, detail="Failed to pick color")
+    return response.data
 
 
 @app.post("/api/sessions/{session_id}/ocr-regions")
 async def add_ocr_region(session_id: str, request: OcrRegionRequest):
     """Add an OCR region."""
-    session = session_manager.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    region = session_manager.add_ocr_region(
-        session_id, request.x, request.y, request.width, request.height, request.label
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.ADD_OCR_REGION,
+        session_id=session_id,
+        x=request.x,
+        y=request.y,
+        width=request.width,
+        height=request.height,
+        label=request.label
     )
-    if region is None:
+    if not response.success or response.data is None:
         raise HTTPException(status_code=400, detail="Failed to add OCR region")
-    
-    return region.to_dict()
+    return response.data
 
 
 @app.put("/api/sessions/{session_id}/ocr-regions/{region_id}")
 async def update_ocr_region(session_id: str, region_id: str, request: OcrRegionUpdateRequest):
     """Update an OCR region."""
-    if not session_manager.update_ocr_region(
-        session_id, region_id, request.x, request.y, request.width, request.height, 
-        request.label, request.ocr_backend
-    ):
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.UPDATE_OCR_REGION,
+        session_id=session_id,
+        region_id=region_id,
+        x=request.x,
+        y=request.y,
+        width=request.width,
+        height=request.height,
+        label=request.label,
+        ocr_backend=request.ocr_backend
+    )
+    if not response.success or not response.data:
         raise HTTPException(status_code=400, detail="Session/region not found or name already exists")
-    
     return {"status": "updated"}
 
 
 @app.delete("/api/sessions/{session_id}/ocr-regions/{region_id}")
 async def delete_ocr_region(session_id: str, region_id: str):
     """Delete an OCR region."""
-    if not session_manager.delete_ocr_region(session_id, region_id):
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.DELETE_OCR_REGION,
+        session_id=session_id,
+        region_id=region_id
+    )
+    if not response.success or not response.data:
         raise HTTPException(status_code=404, detail="Session or region not found")
-    
     return {"status": "deleted"}
 
 
 @app.delete("/api/sessions/{session_id}/ocr-regions")
 async def clear_ocr_regions(session_id: str):
     """Clear all OCR regions."""
-    if not session_manager.clear_ocr_regions(session_id):
+    client = get_ipc_client()
+    response = client.send_command(Command.CLEAR_OCR_REGIONS, session_id=session_id)
+    if not response.success or not response.data:
         raise HTTPException(status_code=404, detail="Session not found")
-    
     return {"status": "cleared"}
 
 
@@ -381,53 +411,66 @@ class GlyphUpdateRequest(BaseModel):
 @app.get("/api/sessions/{session_id}/glyphs")
 async def list_glyphs(session_id: str):
     """List all glyphs for a session."""
-    session = session_manager.get_session(session_id)
-    if session is None:
+    client = get_ipc_client()
+    response = client.send_command(Command.LIST_GLYPHS, session_id=session_id)
+    if not response.success or response.data is None:
         raise HTTPException(status_code=404, detail="Session not found")
-    
-    return {"glyphs": [g.to_dict() for g in session.glyphs]}
+    return {"glyphs": response.data}
 
 
 @app.post("/api/sessions/{session_id}/glyphs")
 async def add_glyph(session_id: str, request: GlyphRequest):
     """Add a new glyph template."""
-    session = session_manager.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    glyph = session_manager.add_glyph(
-        session_id, request.char, request.template, request.width, request.height
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.ADD_GLYPH,
+        session_id=session_id,
+        char=request.char,
+        template=request.template,
+        width=request.width,
+        height=request.height
     )
-    if glyph is None:
+    if not response.success or response.data is None:
         raise HTTPException(status_code=400, detail="Failed to add glyph")
-    
-    return glyph.to_dict()
+    return response.data
 
 
 @app.put("/api/sessions/{session_id}/glyphs/{glyph_id}")
 async def update_glyph(session_id: str, glyph_id: str, request: GlyphUpdateRequest):
     """Update a glyph's character label."""
-    if not session_manager.update_glyph(session_id, glyph_id, request.char):
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.UPDATE_GLYPH,
+        session_id=session_id,
+        glyph_id=glyph_id,
+        char=request.char
+    )
+    if not response.success or not response.data:
         raise HTTPException(status_code=404, detail="Session or glyph not found")
-    
     return {"status": "updated"}
 
 
 @app.delete("/api/sessions/{session_id}/glyphs/{glyph_id}")
 async def delete_glyph(session_id: str, glyph_id: str):
     """Delete a glyph."""
-    if not session_manager.delete_glyph(session_id, glyph_id):
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.DELETE_GLYPH,
+        session_id=session_id,
+        glyph_id=glyph_id
+    )
+    if not response.success or not response.data:
         raise HTTPException(status_code=404, detail="Session or glyph not found")
-    
     return {"status": "deleted"}
 
 
 @app.delete("/api/sessions/{session_id}/glyphs")
 async def clear_glyphs(session_id: str):
     """Clear all glyphs."""
-    if not session_manager.clear_glyphs(session_id):
+    client = get_ipc_client()
+    response = client.send_command(Command.CLEAR_GLYPHS, session_id=session_id)
+    if not response.success or not response.data:
         raise HTTPException(status_code=404, detail="Session not found")
-    
     return {"status": "cleared"}
 
 
@@ -437,53 +480,18 @@ async def detect_glyphs(session_id: str, region_id: Optional[str] = None,
     """
     Detect glyphs in the current processed frame for training.
     Returns detected glyphs with their templates for labeling.
-    
-    Args:
-        session_id: Session ID
-        region_id: Optional region to crop to
-        merge_vertical: If True, auto-merge vertically stacked glyphs (like ':')
     """
-    session = session_manager.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    camera = camera_manager.get_camera(session.camera_index)
-    if camera is None:
-        raise HTTPException(status_code=400, detail="Camera not available")
-    
-    frame = camera.get_frame()
-    if frame is None:
-        raise HTTPException(status_code=400, detail="No frame available")
-    
-    # Get processed frame
-    processed = process_frame_full(
-        frame,
-        perspective_points=session.perspective_points,
-        output_size=session.perspective_output_size,
-        color_filters=[cf.to_dict() for cf in session.color_filters],
-        erosion_kernel=session.erosion_kernel,
-        dilation_kernel=session.dilation_kernel
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.DETECT_GLYPHS,
+        session_id=session_id,
+        region_id=region_id,
+        merge_vertical=merge_vertical,
+        timeout=5.0
     )
-    
-    # If region specified, crop to that region
-    if region_id:
-        region = next((r for r in session.ocr_regions if r.id == region_id), None)
-        if region:
-            h, w = processed.shape[:2]
-            x1 = max(0, min(region.x, w))
-            y1 = max(0, min(region.y, h))
-            x2 = max(0, min(region.x + region.width, w))
-            y2 = max(0, min(region.y + region.height, h))
-            processed = processed[y1:y2, x1:x2]
-    
-    # Detect glyphs
-    detected = get_detected_glyphs_for_training(processed, merge_vertical=merge_vertical)
-    
-    return {
-        "glyphs": detected,
-        "glyph_size": GLYPH_SIZE,
-        "merge_vertical": merge_vertical
-    }
+    if not response.success or response.data is None:
+        raise HTTPException(status_code=400, detail="Failed to detect glyphs")
+    return response.data
 
 
 class CombineGlyphsRequest(BaseModel):
@@ -497,92 +505,55 @@ async def combine_glyphs(session_id: str, request: CombineGlyphsRequest):
     Combine multiple detected glyphs into a single template.
     Used for characters like ':' that are detected as separate components.
     """
-    session = session_manager.get_session(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    camera = camera_manager.get_camera(session.camera_index)
-    if camera is None:
-        raise HTTPException(status_code=400, detail="Camera not available")
-    
-    frame = camera.get_frame()
-    if frame is None:
-        raise HTTPException(status_code=400, detail="No frame available")
-    
-    # Get processed frame
-    processed = process_frame_full(
-        frame,
-        perspective_points=session.perspective_points,
-        output_size=session.perspective_output_size,
-        color_filters=[cf.to_dict() for cf in session.color_filters],
-        erosion_kernel=session.erosion_kernel,
-        dilation_kernel=session.dilation_kernel
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.COMBINE_GLYPHS,
+        session_id=session_id,
+        indices=request.indices,
+        region_id=request.region_id,
+        timeout=5.0
     )
-    
-    # If region specified, crop to that region
-    if request.region_id:
-        region = next((r for r in session.ocr_regions if r.id == request.region_id), None)
-        if region:
-            h, w = processed.shape[:2]
-            x1 = max(0, min(region.x, w))
-            y1 = max(0, min(region.y, h))
-            x2 = max(0, min(region.x + region.width, w))
-            y2 = max(0, min(region.y + region.height, h))
-            processed = processed[y1:y2, x1:x2]
-    
-    combined = combine_glyphs_by_indices(processed, request.indices)
-    
-    if combined is None:
+    if not response.success or response.data is None:
         raise HTTPException(status_code=400, detail="Invalid glyph indices")
-    
-    return combined
+    return response.data
 
 
 def generate_mjpeg_stream(session_id: str, stream_type: str):
-    """Generator for MJPEG streaming."""
+    """Generator for MJPEG streaming with timeout handling."""
+    client = get_ipc_client()
+    last_frame = None
+    
     while True:
-        session = session_manager.get_session(session_id)
-        if session is None:
-            break
+        frame, is_stale = client.get_frame(session_id, stream_type)
         
-        camera = camera_manager.get_camera(session.camera_index)
-        if camera is None:
-            break
-        
-        frame = camera.get_frame()
-        if frame is None:
-            continue
-        
-        if stream_type == "original":
-            pass
-        elif stream_type == "perspective":
-            frame = process_frame_perspective(
-                frame,
-                session.perspective_points,
-                session.perspective_output_size
+        if frame is not None:
+            last_frame = frame
+            jpeg = frame_to_jpeg(frame)
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
             )
-        elif stream_type == "processed":
-            frame = process_frame_full(
-                frame,
-                perspective_points=session.perspective_points,
-                output_size=session.perspective_output_size,
-                color_filters=[cf.to_dict() for cf in session.color_filters],
-                erosion_kernel=session.erosion_kernel,
-                dilation_kernel=session.dilation_kernel
+        elif last_frame is not None:
+            # Return cached frame on timeout
+            jpeg = frame_to_jpeg(last_frame)
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
             )
+        else:
+            # No frame available, yield empty and sleep briefly
+            time.sleep(0.1)
         
-        jpeg = frame_to_jpeg(frame)
-        yield (
-            b"--frame\r\n"
-            b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
-        )
+        # Small delay to limit frame rate
+        time.sleep(0.033)  # ~30 fps max
 
 
 @app.get("/stream/{session_id}/original")
 async def stream_original(session_id: str):
     """MJPEG stream of original camera feed."""
-    session = session_manager.get_session(session_id)
-    if session is None:
+    client = get_ipc_client()
+    response = client.send_command(Command.GET_SESSION, session_id=session_id)
+    if not response.success or response.data is None:
         raise HTTPException(status_code=404, detail="Session not found")
     
     return StreamingResponse(
@@ -594,8 +565,9 @@ async def stream_original(session_id: str):
 @app.get("/stream/{session_id}/perspective")
 async def stream_perspective(session_id: str):
     """MJPEG stream with perspective correction applied."""
-    session = session_manager.get_session(session_id)
-    if session is None:
+    client = get_ipc_client()
+    response = client.send_command(Command.GET_SESSION, session_id=session_id)
+    if not response.success or response.data is None:
         raise HTTPException(status_code=404, detail="Session not found")
     
     return StreamingResponse(
@@ -607,8 +579,9 @@ async def stream_perspective(session_id: str):
 @app.get("/stream/{session_id}/processed")
 async def stream_processed(session_id: str):
     """MJPEG stream with full processing (perspective + color/morphology)."""
-    session = session_manager.get_session(session_id)
-    if session is None:
+    client = get_ipc_client()
+    response = client.send_command(Command.GET_SESSION, session_id=session_id)
+    if not response.success or response.data is None:
         raise HTTPException(status_code=404, detail="Session not found")
     
     return StreamingResponse(
@@ -620,83 +593,65 @@ async def stream_processed(session_id: str):
 @app.websocket("/ws/{session_id}/ocr")
 async def websocket_ocr(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for real-time OCR results."""
-    session = session_manager.get_session(session_id)
-    if session is None:
+    client = get_ipc_client()
+    response = client.send_command(Command.GET_SESSION, session_id=session_id)
+    if not response.success or response.data is None:
         await websocket.close(code=4004)
         return
     
     await websocket.accept()
     
-    queue: asyncio.Queue = asyncio.Queue()
-    
-    def on_ocr_result(results: dict[str, list[dict]]):
-        try:
-            queue.put_nowait(results)
-        except asyncio.QueueFull:
-            pass
-    
-    ocr_manager.subscribe(session_id, on_ocr_result)
-    
     try:
         while True:
-            try:
-                results = await asyncio.wait_for(queue.get(), timeout=5.0)
+            # Poll for OCR results with caching
+            results, is_stale = client.get_ocr_results(session_id)
+            
+            if results is not None:
                 await websocket.send_text(json.dumps({"results": results}))
-            except asyncio.TimeoutError:
+            else:
                 await websocket.send_text(json.dumps({"ping": True}))
+            
+            await asyncio.sleep(0.5)  # Poll every 500ms
+            
     except WebSocketDisconnect:
         pass
-    finally:
-        ocr_manager.unsubscribe(session_id, on_ocr_result)
-
-
-from fastapi.responses import PlainTextResponse
+    except Exception:
+        pass
 
 
 @app.get("/ocr/{session_id}")
 async def get_ocr_results(session_id: str):
     """Get all OCR results for a session as JSON."""
-    session = session_manager.get_session(session_id)
-    if session is None:
+    client = get_ipc_client()
+    response = client.send_command(Command.GET_SESSION, session_id=session_id)
+    if not response.success or response.data is None:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    results = ocr_manager.get_results(session_id)
+    results_response = client.send_command(Command.GET_OCR_RESULTS, session_id=session_id)
+    if not results_response.success or results_response.data is None:
+        return {}
     
-    # Build region -> backend mapping
-    region_backends = {r.label: r.ocr_backend for r in session.ocr_regions}
-    
-    formatted = {}
-    for region_name, detections in results.items():
-        texts = [d['text'] for d in detections]
-        # Ensure all numeric values are Python native types for JSON serialization
-        clean_detections = []
-        for d in detections:
-            clean_detections.append({
-                "bbox": d.get("bbox", []),
-                "text": d.get("text", ""),
-                "confidence": float(d.get("confidence", 0))
-            })
-        formatted[region_name] = {
-            "text": ' '.join(texts),
-            "backend": region_backends.get(region_name, "tesseract"),
-            "detections": clean_detections
-        }
-    
-    return formatted
+    return results_response.data
 
 
 @app.get("/ocr/{session_id}/{region_name}", response_class=PlainTextResponse)
 async def get_ocr_region_text(session_id: str, region_name: str):
     """Get plain text OCR result for a specific region."""
-    session = session_manager.get_session(session_id)
-    if session is None:
+    client = get_ipc_client()
+    response = client.send_command(Command.GET_SESSION, session_id=session_id)
+    if not response.success or response.data is None:
         raise HTTPException(status_code=404, detail="Session not found")
     
-    text = ocr_manager.get_region_text(session_id, region_name)
-    if text is None:
+    text_response = client.send_command(
+        Command.GET_REGION_TEXT,
+        session_id=session_id,
+        region_name=region_name
+    )
+    
+    if not text_response.success or text_response.data is None:
         raise HTTPException(status_code=404, detail="Region not found or no results")
     
-    return text
+    return text_response.data
 
 
 DEBUG_DIR = "./debug"
@@ -705,8 +660,9 @@ DEBUG_DIR = "./debug"
 @app.get("/debug/{session_id}")
 async def list_debug_images(session_id: str):
     """List all debug images for a session."""
-    session = session_manager.get_session(session_id)
-    if session is None:
+    client = get_ipc_client()
+    response = client.send_command(Command.GET_SESSION, session_id=session_id)
+    if not response.success or response.data is None:
         raise HTTPException(status_code=404, detail="Session not found")
     
     session_dir = os.path.join(DEBUG_DIR, session_id)
@@ -896,6 +852,8 @@ class OCRFileWriter:
         self.base_path = Path(base_directory).resolve()
         self._subscribed_sessions: set[str] = set()
         self._lock = threading.Lock()
+        self._running = True
+        self._poll_thread: Optional[threading.Thread] = None
         
         # Create base directory if it doesn't exist
         self.base_path.mkdir(parents=True, exist_ok=True)
@@ -912,18 +870,18 @@ class OCRFileWriter:
         result = result.strip('. ')
         return result or 'unnamed'
     
-    def _write_results(self, session_id: str, results: dict[str, list[dict]]):
+    def _write_results(self, session_id: str, results: dict):
         """Write OCR results to files."""
         # Create session directory
         session_dir = self.base_path / self._sanitize_filename(session_id)
         session_dir.mkdir(parents=True, exist_ok=True)
         
-        for region_name, detections in results.items():
+        for region_name, region_data in results.items():
             if region_name == '_full':
                 continue  # Skip full-frame results
             
-            # Combine all text from detections
-            text = ' '.join(d.get('text', '') for d in detections).strip()
+            # Get text from region data
+            text = region_data.get('text', '').strip() if isinstance(region_data, dict) else ''
             
             # Write to file
             filename = self._sanitize_filename(region_name) + '.txt'
@@ -934,23 +892,52 @@ class OCRFileWriter:
             except Exception as e:
                 print(f"Error writing OCR result to {filepath}: {e}")
     
+    def _poll_loop(self):
+        """Poll for OCR results and write them."""
+        while self._running:
+            with self._lock:
+                sessions = list(self._subscribed_sessions)
+            
+            client = None
+            try:
+                client = get_ipc_client()
+            except RuntimeError:
+                pass
+            
+            if client:
+                for session_id in sessions:
+                    results, _ = client.get_ocr_results(session_id)
+                    if results:
+                        self._write_results(session_id, results)
+            
+            time.sleep(0.5)
+    
     def subscribe_to_session(self, session_id: str):
         """Subscribe to OCR results for a session."""
         with self._lock:
-            if session_id in self._subscribed_sessions:
-                return
             self._subscribed_sessions.add(session_id)
         
-        def on_result(results: dict[str, list[dict]]):
-            self._write_results(session_id, results)
+        # Start poll thread if not running
+        if self._poll_thread is None or not self._poll_thread.is_alive():
+            self._poll_thread = threading.Thread(target=self._poll_loop, daemon=True)
+            self._poll_thread.start()
         
-        ocr_manager.subscribe(session_id, on_result)
         print(f"Subscribed to OCR results for session {session_id}")
     
     def subscribe_all_sessions(self):
         """Subscribe to all existing sessions."""
-        for session in session_manager.list_sessions():
-            self.subscribe_to_session(session.id)
+        try:
+            client = get_ipc_client()
+            response = client.send_command(Command.LIST_SESSIONS)
+            if response.success and response.data:
+                for session in response.data:
+                    self.subscribe_to_session(session['id'])
+        except RuntimeError:
+            pass
+    
+    def stop(self):
+        """Stop the file writer."""
+        self._running = False
 
 
 # Global file writer instance (set from main)
@@ -971,6 +958,9 @@ def get_file_writer() -> OCRFileWriter | None:
 
 
 if __name__ == "__main__":
+    # Required for Windows multiprocessing
+    mp.freeze_support()
+    
     import uvicorn
     
     args = parse_args()

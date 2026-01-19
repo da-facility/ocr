@@ -50,6 +50,21 @@ hidden_imports = [
     'easyocr',
     'torch',
     'torchvision',
+    # Multiprocessing support for worker process
+    'multiprocessing',
+    'multiprocessing.connection',
+    'multiprocessing.process',
+    'multiprocessing.synchronize',
+    'multiprocessing.queues',
+    'multiprocessing.pool',
+    # Worker module imports
+    'worker',
+    'ipc',
+    'camera',
+    'sessions',
+    'processing',
+    'ocr',
+    'glyphs',
 ]
 
 # Data files to include
@@ -60,6 +75,17 @@ datas = [
 
 # Binary files (OpenCV may need some)
 binaries = []
+
+# Collect all Python source files to include them
+collect_submodules = [
+    'worker',
+    'ipc', 
+    'camera',
+    'sessions',
+    'processing',
+    'ocr',
+    'glyphs',
+]
 
 a = Analysis(
     ['main.py'],
