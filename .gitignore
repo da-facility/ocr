@@ -32,10 +32,6 @@ env.bak/
 venv.bak/
 .venv/
 
-# PyInstaller
-*.manifest
-*.spec
-
 # Node.js
 node_modules/
 npm-debug.log*

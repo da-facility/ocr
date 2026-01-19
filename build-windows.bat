@@ -6,6 +6,10 @@ echo   OCR Camera App - Windows Build Script
 echo ========================================
 echo.
 
+:: Get script directory
+set "SCRIPT_DIR=%~dp0"
+cd /d "%SCRIPT_DIR%"
+
 :: Check Python
 python --version >nul 2>&1
 if errorlevel 1 (
@@ -24,6 +28,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:: Check if spec file exists
+if not exist "backend\ocr-camera.spec" (
+    echo ERROR: ocr-camera.spec not found in backend folder
+    echo Make sure you have the complete project files.
+    pause
+    exit /b 1
+)
+
 echo [1/5] Installing backend dependencies...
 cd backend
 pip install -e . --quiet
@@ -35,7 +47,7 @@ if errorlevel 1 (
 )
 
 echo [2/5] Installing frontend dependencies...
-cd ../frontend
+cd ..\frontend
 call npm install --silent
 if errorlevel 1 (
     echo ERROR: Failed to install frontend dependencies
@@ -52,8 +64,9 @@ if errorlevel 1 (
 )
 
 echo [4/5] Building executable...
-cd ../backend
-pyinstaller ocr-camera.spec --noconfirm
+cd ..\backend
+echo Using spec file: %CD%\ocr-camera.spec
+pyinstaller "%CD%\ocr-camera.spec" --noconfirm
 if errorlevel 1 (
     echo ERROR: Failed to build executable
     pause
@@ -64,7 +77,7 @@ echo [5/5] Done!
 echo.
 echo ========================================
 echo   Build complete!
-echo   Executable: backend\dist\OCR-Camera.exe
+echo   Executable: %SCRIPT_DIR%backend\dist\OCR-Camera.exe
 echo ========================================
 echo.
 echo Usage:
