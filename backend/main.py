@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -32,16 +33,6 @@ def get_static_path():
         return os.path.join(base, 'static')
     # In development, check for frontend dist
     return os.path.join(os.path.dirname(base), 'frontend', 'dist')
-
-app = FastAPI(title="OCR Camera Backend")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 
 def start_session_ocr(session):
@@ -80,9 +71,11 @@ def start_session_ocr(session):
     ocr_manager.start_ocr(session.id, get_processed_frame, get_regions, get_glyphs)
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize cameras and OCR for loaded sessions."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan - startup and shutdown events."""
+    # Startup
+    print("Starting OCR Camera Backend...")
     for session in session_manager.list_sessions():
         camera = camera_manager.acquire_camera(session.camera_index)
         if camera:
@@ -90,6 +83,22 @@ async def startup_event():
             print(f"Restored session {session.id} with camera {session.camera_index}")
         else:
             print(f"Failed to restore session {session.id}: camera {session.camera_index} not available")
+    
+    yield  # App is running
+    
+    # Shutdown
+    print("Shutting down OCR Camera Backend...")
+
+
+app = FastAPI(title="OCR Camera Backend", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class CreateSessionRequest(BaseModel):

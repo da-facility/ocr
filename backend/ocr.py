@@ -7,17 +7,37 @@ import cv2
 
 from glyphs import recognize_with_glyphs, glyphs_to_text
 
-try:
-    import pytesseract
-    TESSERACT_AVAILABLE = True
-except ImportError:
-    TESSERACT_AVAILABLE = False
+# Lazy-load heavy OCR libraries to speed up startup
+TESSERACT_AVAILABLE = False
+EASYOCR_AVAILABLE = False
+_pytesseract = None
+_easyocr = None
 
-try:
-    import easyocr
-    EASYOCR_AVAILABLE = True
-except ImportError:
-    EASYOCR_AVAILABLE = False
+def _check_tesseract():
+    """Lazy check for tesseract availability."""
+    global TESSERACT_AVAILABLE, _pytesseract
+    if _pytesseract is None:
+        try:
+            import pytesseract
+            _pytesseract = pytesseract
+            # Verify tesseract is actually installed
+            _pytesseract.get_tesseract_version()
+            TESSERACT_AVAILABLE = True
+        except Exception:
+            TESSERACT_AVAILABLE = False
+    return TESSERACT_AVAILABLE
+
+def _check_easyocr():
+    """Lazy check for EasyOCR availability."""
+    global EASYOCR_AVAILABLE, _easyocr
+    if _easyocr is None:
+        try:
+            import easyocr
+            _easyocr = easyocr
+            EASYOCR_AVAILABLE = True
+        except ImportError:
+            EASYOCR_AVAILABLE = False
+    return EASYOCR_AVAILABLE
 
 
 DEBUG_DIR = "./debug"
@@ -86,23 +106,41 @@ class OCREngine:
         
         self.easyocr_reader = None
         self._initialized = True
+        self._tesseract_checked = False
+        self._easyocr_checked = False
         self.tesseract_available = False
+        # Don't initialize OCR backends on startup - lazy load on first use
+        print("OCR Engine initialized (backends will load on first use)")
+
+    def _ensure_tesseract(self):
+        """Lazy-load tesseract on first use."""
+        if self._tesseract_checked:
+            return self.tesseract_available
+        self._tesseract_checked = True
         
-        if TESSERACT_AVAILABLE:
+        if _check_tesseract():
             try:
-                version = pytesseract.get_tesseract_version()
-                print(f"Tesseract OCR available: {version}")
+                version = _pytesseract.get_tesseract_version()
+                print(f"Tesseract OCR loaded: {version}")
                 self.tesseract_available = True
             except Exception as e:
                 print(f"Tesseract not available: {e}")
-                print("Install with: brew install tesseract")
+        return self.tesseract_available
+
+    def _ensure_easyocr(self):
+        """Lazy-load EasyOCR on first use (slow - loads ML models)."""
+        if self._easyocr_checked:
+            return self.easyocr_reader is not None
+        self._easyocr_checked = True
         
-        if EASYOCR_AVAILABLE:
+        if _check_easyocr():
             try:
-                self.easyocr_reader = easyocr.Reader(['en'], gpu=False)
-                print("EasyOCR initialized")
+                print("Loading EasyOCR (this may take a moment)...")
+                self.easyocr_reader = _easyocr.Reader(['en'], gpu=False)
+                print("EasyOCR loaded")
             except Exception as e:
                 print(f"Failed to initialize EasyOCR: {e}")
+        return self.easyocr_reader is not None
 
     def read_text(self, frame: np.ndarray, backend: str = "tesseract", 
                   session_id: str = "", region_name: str = "",
@@ -123,13 +161,15 @@ class OCREngine:
             # Traditional OCR (needs preprocessing)
             processed = preprocess_for_ocr(frame)
             
-            if backend == "tesseract" and self.tesseract_available:
+            if backend == "tesseract" and self._ensure_tesseract():
                 return self._read_tesseract(processed)
-            elif backend == "easyocr" and self.easyocr_reader is not None:
+            elif backend == "easyocr" and self._ensure_easyocr():
                 return self._read_easyocr(processed)
-            elif self.tesseract_available:
+            elif self._ensure_tesseract():
+                # Fallback to tesseract if available
                 return self._read_tesseract(processed)
-            elif self.easyocr_reader is not None:
+            elif self._ensure_easyocr():
+                # Fallback to easyocr if available
                 return self._read_easyocr(processed)
             else:
                 print("No OCR backend available!")
@@ -161,7 +201,7 @@ class OCREngine:
         config = '--psm 7 -c tessedit_char_whitelist=0123456789:.-'
         
         try:
-            text = pytesseract.image_to_string(processed, config=config).strip()
+            text = _pytesseract.image_to_string(processed, config=config).strip()
             text = text.replace(' ', '').replace('\n', '')
             
             if text:
@@ -173,7 +213,7 @@ class OCREngine:
             
             # Try PSM 6 (block of text) as fallback
             config_fallback = '--psm 6 -c tessedit_char_whitelist=0123456789:.-'
-            text = pytesseract.image_to_string(processed, config=config_fallback).strip()
+            text = _pytesseract.image_to_string(processed, config=config_fallback).strip()
             text = text.replace(' ', '').replace('\n', '')
             
             if text:
