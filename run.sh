@@ -79,7 +79,7 @@ if [ "$BACKEND_ONLY" = false ]; then
     sleep 1
     echo "Starting frontend dev server..."
     cd frontend
-    npm run dev &
+    bun run dev &
     FRONTEND_PID=$!
     cd ..
 fi

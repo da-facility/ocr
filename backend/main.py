@@ -12,6 +12,14 @@ from pydantic import BaseModel
 from typing import Optional
 import asyncio
 import json
+import mimetypes
+
+# Fix MIME types for Windows (Win10 registry often has .js as text/plain)
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("application/javascript", ".mjs")
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("application/json", ".json")
+mimetypes.add_type("image/svg+xml", ".svg")
 
 from sessions import session_manager
 from camera import camera_manager

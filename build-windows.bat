@@ -19,11 +19,12 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: Check Node.js
-node --version >nul 2>&1
+:: Check Bun
+bun --version >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: Node.js is not installed or not in PATH
-    echo Please install Node.js 18+ from https://nodejs.org
+    echo ERROR: Bun is not installed or not in PATH
+    echo Please install Bun from https://bun.sh
+    echo   Windows: powershell -c "irm bun.sh/install.ps1 | iex"
     pause
     exit /b 1
 )
@@ -48,7 +49,7 @@ if errorlevel 1 (
 
 echo [2/5] Installing frontend dependencies...
 cd ..\frontend
-call npm install --silent
+call bun install
 if errorlevel 1 (
     echo ERROR: Failed to install frontend dependencies
     pause
@@ -56,7 +57,7 @@ if errorlevel 1 (
 )
 
 echo [3/5] Building frontend...
-call npm run build
+call bun run build
 if errorlevel 1 (
     echo ERROR: Failed to build frontend
     pause
@@ -66,11 +67,17 @@ if errorlevel 1 (
 echo [4/5] Building executable...
 cd ..\backend
 echo Using spec file: %CD%\ocr-camera.spec
-pyinstaller "%CD%\ocr-camera.spec" --noconfirm
+pyinstaller "%CD%\ocr-camera.spec" --noconfirm --clean
 if errorlevel 1 (
     echo ERROR: Failed to build executable
     pause
     exit /b 1
+)
+
+:: Clean up macOS-specific build artifacts if they exist
+if exist "build\ocr-camera\OCR-Camera.pkg" (
+    echo Removing macOS .pkg artifact...
+    del /q "build\ocr-camera\OCR-Camera.pkg"
 )
 
 echo [5/5] Done!

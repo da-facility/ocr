@@ -96,9 +96,5 @@ exe = EXE(
     runtime_tmpdir=None,
     console=True,  # Set to False for no console window (but you lose CLI args visibility)
     disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
     icon=None,  # Add path to .ico file for Windows icon
 )

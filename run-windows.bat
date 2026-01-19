@@ -19,8 +19,8 @@ timeout /t 2 /nobreak >nul
 
 :: Start frontend (dev mode)
 echo Starting frontend dev server...
-cd ../frontend
-start "OCR Frontend" cmd /c "npm run dev"
+cd ..\frontend
+start "OCR Frontend" cmd /c "bun run dev"
 
 :: Wait and open browser
 timeout /t 3 /nobreak >nul

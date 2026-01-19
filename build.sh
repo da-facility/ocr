@@ -23,12 +23,14 @@ fi
 PYTHON=$(command -v python3 || command -v python)
 echo "Python: $($PYTHON --version)"
 
-# Check Node.js
-if ! command -v node &> /dev/null; then
-    echo "ERROR: Node.js is not installed"
+# Check Bun
+if ! command -v bun &> /dev/null; then
+    echo "ERROR: Bun is not installed"
+    echo "Install from https://bun.sh:"
+    echo "  curl -fsSL https://bun.sh/install | bash"
     exit 1
 fi
-echo "Node.js: $(node --version)"
+echo "Bun: $(bun --version)"
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,10 +44,10 @@ $PYTHON -m pip install pyinstaller --quiet
 
 echo "[2/5] Installing frontend dependencies..."
 cd ../frontend
-npm install --silent
+bun install
 
 echo "[3/5] Building frontend..."
-npm run build
+bun run build
 
 echo "[4/5] Building executable..."
 cd ../backend
