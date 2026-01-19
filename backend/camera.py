@@ -8,6 +8,16 @@ import re
 import subprocess
 
 
+def _unique_preserve_order(values: list[str]) -> list[str]:
+    seen = set()
+    result = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
 def _read_cmd_lines(command: list[str]) -> list[str]:
     try:
         result = subprocess.run(
@@ -33,7 +43,7 @@ def _get_system_camera_names() -> list[str]:
     names: list[str] = []
 
     if system == "Windows":
-        names = _read_cmd_lines(
+        primary = _read_cmd_lines(
             [
                 "powershell",
                 "-NoProfile",
@@ -42,17 +52,17 @@ def _get_system_camera_names() -> list[str]:
                 "Select-Object -ExpandProperty FriendlyName",
             ]
         )
-        if not names:
-            names = _read_cmd_lines(
-                [
-                    "powershell",
-                    "-NoProfile",
-                    "-Command",
-                    "Get-CimInstance Win32_PnPEntity | "
-                    "Where-Object { $_.PNPClass -in @('Camera','Image') } | "
-                    "Select-Object -ExpandProperty Name",
-                ]
-            )
+        secondary = _read_cmd_lines(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_PnPEntity | "
+                "Where-Object { $_.PNPClass -in @('Camera','Image') } | "
+                "Select-Object -ExpandProperty Name",
+            ]
+        )
+        names = _unique_preserve_order(primary + secondary)
     elif system == "Darwin":
         lines = _read_cmd_lines(["system_profiler", "SPCameraDataType"])
         for line in lines:
@@ -75,6 +85,32 @@ def _format_camera_name(index: int, system_names: list[str]) -> str:
     return base
 
 
+def _open_video_capture(index: int) -> cv2.VideoCapture:
+    if platform.system() == "Windows":
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            return cap
+    return cv2.VideoCapture(index)
+
+
+def _read_frame_size(cap: cv2.VideoCapture) -> Optional[tuple[int, int]]:
+    ret, frame = cap.read()
+    if not ret or frame is None:
+        return None
+    height, width = frame.shape[:2]
+    return width, height
+
+
+def _try_set_resolution(cap: cv2.VideoCapture, sizes: list[tuple[int, int]]) -> Optional[tuple[int, int]]:
+    for width, height in sizes:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        actual = _read_frame_size(cap)
+        if actual == (width, height):
+            return actual
+    return _read_frame_size(cap)
+
+
 class CameraCapture:
     def __init__(self, camera_index: int):
         self.camera_index = camera_index
@@ -88,13 +124,19 @@ class CameraCapture:
         if self.running:
             return True
         
-        self.cap = cv2.VideoCapture(self.camera_index)
+        self.cap = _open_video_capture(self.camera_index)
         if not self.cap.isOpened():
             return False
-        
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
+
+        _try_set_resolution(
+            self.cap,
+            [
+                (1920, 1080),
+                (1280, 720),
+                (720, 576),
+                (640, 480),
+            ],
+        )
         
         self.running = True
         self.thread = threading.Thread(target=self._capture_loop, daemon=True)
@@ -168,10 +210,22 @@ class CameraManager:
         system_names = _get_system_camera_names()
         
         for i in range(max_cameras):
-            cap = cv2.VideoCapture(i)
+            cap = _open_video_capture(i)
             if cap.isOpened():
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                size = _try_set_resolution(
+                    cap,
+                    [
+                        (1920, 1080),
+                        (1280, 720),
+                        (720, 576),
+                        (640, 480),
+                    ],
+                )
+                if size:
+                    width, height = size
+                else:
+                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
                 
                 available.append({
                     "index": i,
