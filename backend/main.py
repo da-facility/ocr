@@ -6,6 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 import sys
 import argparse
+from pathlib import Path
+import threading
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
@@ -170,6 +172,11 @@ async def create_session(request: CreateSessionRequest):
     
     session = session_manager.create_session(request.camera_index, request.camera_name)
     start_session_ocr(session)
+    
+    # Subscribe to file writer if configured
+    file_writer = get_file_writer()
+    if file_writer:
+        file_writer.subscribe_to_session(session.id)
     
     return session.to_dict()
 
@@ -773,13 +780,18 @@ def parse_args():
         action="store_true",
         help="Don't open browser on startup"
     )
+    parser.add_argument(
+        "--directory", "-d",
+        type=str,
+        default=None,
+        help="Directory to save OCR results. Creates path/[session_id]/[region_name].txt files"
+    )
     return parser.parse_args()
 
 
 def open_browser(host: str, port: int):
     """Open the default browser to the app URL."""
     import webbrowser
-    import threading
     import time
     
     def _open():
@@ -789,6 +801,87 @@ def open_browser(host: str, port: int):
         print(f"Opened browser at {url}")
     
     threading.Thread(target=_open, daemon=True).start()
+
+
+class OCRFileWriter:
+    """Writes OCR results to files in a specified directory."""
+    
+    def __init__(self, base_directory: str):
+        self.base_path = Path(base_directory).resolve()
+        self._subscribed_sessions: set[str] = set()
+        self._lock = threading.Lock()
+        
+        # Create base directory if it doesn't exist
+        self.base_path.mkdir(parents=True, exist_ok=True)
+        print(f"OCR results will be saved to: {self.base_path}")
+    
+    def _sanitize_filename(self, name: str) -> str:
+        """Sanitize a string to be safe for use as a filename on all platforms."""
+        # Replace characters that are invalid on Windows/Linux/macOS
+        invalid_chars = '<>:"/\\|?*'
+        result = name
+        for char in invalid_chars:
+            result = result.replace(char, '_')
+        # Also handle leading/trailing spaces and dots (Windows issues)
+        result = result.strip('. ')
+        return result or 'unnamed'
+    
+    def _write_results(self, session_id: str, results: dict[str, list[dict]]):
+        """Write OCR results to files."""
+        # Create session directory
+        session_dir = self.base_path / self._sanitize_filename(session_id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        
+        for region_name, detections in results.items():
+            if region_name == '_full':
+                continue  # Skip full-frame results
+            
+            # Combine all text from detections
+            text = ' '.join(d.get('text', '') for d in detections).strip()
+            
+            # Write to file
+            filename = self._sanitize_filename(region_name) + '.txt'
+            filepath = session_dir / filename
+            
+            try:
+                filepath.write_text(text, encoding='utf-8')
+            except Exception as e:
+                print(f"Error writing OCR result to {filepath}: {e}")
+    
+    def subscribe_to_session(self, session_id: str):
+        """Subscribe to OCR results for a session."""
+        with self._lock:
+            if session_id in self._subscribed_sessions:
+                return
+            self._subscribed_sessions.add(session_id)
+        
+        def on_result(results: dict[str, list[dict]]):
+            self._write_results(session_id, results)
+        
+        ocr_manager.subscribe(session_id, on_result)
+        print(f"Subscribed to OCR results for session {session_id}")
+    
+    def subscribe_all_sessions(self):
+        """Subscribe to all existing sessions."""
+        for session in session_manager.list_sessions():
+            self.subscribe_to_session(session.id)
+
+
+# Global file writer instance (set from main)
+_ocr_file_writer: OCRFileWriter | None = None
+
+
+def setup_file_writer(directory: str):
+    """Setup the OCR file writer."""
+    global _ocr_file_writer
+    _ocr_file_writer = OCRFileWriter(directory)
+    _ocr_file_writer.subscribe_all_sessions()
+    return _ocr_file_writer
+
+
+def get_file_writer() -> OCRFileWriter | None:
+    """Get the global file writer instance."""
+    return _ocr_file_writer
 
 
 if __name__ == "__main__":
@@ -803,6 +896,10 @@ if __name__ == "__main__":
     print(f"Host: {args.host}")
     print(f"Port: {args.port}")
     print(f"Static files: {'Yes' if has_static else 'No (run frontend dev server separately)'}")
+    
+    # Setup file writer if directory specified
+    if args.directory:
+        setup_file_writer(args.directory)
     
     # Open browser if static files available and not disabled
     if has_static and not args.no_browser:
