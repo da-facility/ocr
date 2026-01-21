@@ -225,20 +225,6 @@ async function handleRenameRegion(regionId, newLabel) {
   }
 }
 
-async function handleUpdateBackend(regionId, backend) {
-  try {
-    await updateOcrRegion(sessionId.value, regionId, { ocr_backend: backend })
-    if (session.value) {
-      const region = session.value.ocr_regions.find(r => r.id === regionId)
-      if (region) {
-        region.ocr_backend = backend
-      }
-    }
-  } catch (e) {
-    console.error('Failed to update backend:', e)
-  }
-}
-
 function toggleColorsLayout() {
   colorsLayout.value = colorsLayout.value === 'vertical' ? 'horizontal' : 'vertical'
 }
@@ -444,8 +430,8 @@ watch(sessionId, () => {
           @delete-region="handleDeleteOcrRegion"
           @clear-regions="handleClearOcrRegions"
           @rename-region="handleRenameRegion"
-          @update-backend="handleUpdateBackend"
           @glyphs-updated="loadSession"
+          @region-updated="loadSession"
         />
       </aside>
     </div>

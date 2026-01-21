@@ -29,6 +29,7 @@ class Glyph:
     template: list[list[int]]  # Normalized binary template (2D array of 0/255)
     width: int  # Original width before normalization
     height: int  # Original height before normalization
+    ignored: bool = False  # If True, this glyph is ignored during recognition
 
     def to_dict(self) -> dict:
         return {
@@ -36,7 +37,8 @@ class Glyph:
             "char": self.char,
             "template": self.template,
             "width": self.width,
-            "height": self.height
+            "height": self.height,
+            "ignored": self.ignored
         }
 
 
@@ -49,7 +51,9 @@ class OcrRegion:
     width: int
     height: int
     label: str = ""
-    ocr_backend: str = "tesseract"  # "tesseract", "easyocr", or "glyphs"
+    ocr_backend: str = "glyphs"  # Only "glyphs" supported
+    region_type: str = "generic"  # "generic", "time", or "score"
+    score_subtype: Optional[str] = None  # For score type: None or "singles"
 
     def to_dict(self) -> dict:
         return {
@@ -59,7 +63,9 @@ class OcrRegion:
             "width": self.width,
             "height": self.height,
             "label": self.label,
-            "ocr_backend": self.ocr_backend
+            "ocr_backend": self.ocr_backend,
+            "region_type": self.region_type,
+            "score_subtype": self.score_subtype
         }
 
 
@@ -138,12 +144,15 @@ class SessionManager:
                 ]
                 ocr_regions = [
                     OcrRegion(id=r['id'], x=r['x'], y=r['y'], width=r['width'], height=r['height'], 
-                              label=r['label'], ocr_backend=r.get('ocr_backend', 'tesseract'))
+                              label=r['label'], ocr_backend='glyphs',
+                              region_type=r.get('region_type', 'generic'),
+                              score_subtype=r.get('score_subtype'))
                     for r in sdata.get('ocr_regions', [])
                 ]
                 glyphs = [
                     Glyph(id=g['id'], char=g['char'], template=g['template'], 
-                          width=g['width'], height=g['height'])
+                          width=g['width'], height=g['height'],
+                          ignored=g.get('ignored', False))
                     for g in sdata.get('glyphs', [])
                 ]
                 
@@ -276,7 +285,8 @@ class SessionManager:
     def update_ocr_region(self, session_id: str, region_id: str, 
                           x: Optional[int] = None, y: Optional[int] = None,
                           width: Optional[int] = None, height: Optional[int] = None,
-                          label: Optional[str] = None, ocr_backend: Optional[str] = None) -> bool:
+                          label: Optional[str] = None, ocr_backend: Optional[str] = None,
+                          region_type: Optional[str] = None, score_subtype: Optional[str] = None) -> bool:
         session = self.get_session(session_id)
         if session:
             for region in session.ocr_regions:
@@ -295,6 +305,10 @@ class SessionManager:
                         region.height = height
                     if ocr_backend is not None:
                         region.ocr_backend = ocr_backend
+                    if region_type is not None:
+                        region.region_type = region_type
+                    if score_subtype is not None:
+                        region.score_subtype = score_subtype if score_subtype else None
                     self.save_sessions()
                     return True
         return False
@@ -316,23 +330,26 @@ class SessionManager:
         return False
 
     def add_glyph(self, session_id: str, char: str, template: list[list[int]], 
-                  width: int, height: int) -> Optional[Glyph]:
+                  width: int, height: int, ignored: bool = False) -> Optional[Glyph]:
         session = self.get_session(session_id)
         if session:
             glyph_id = str(uuid.uuid4())[:8]
-            glyph = Glyph(id=glyph_id, char=char, template=template, width=width, height=height)
+            glyph = Glyph(id=glyph_id, char=char, template=template, width=width, height=height, ignored=ignored)
             session.glyphs.append(glyph)
             self.save_sessions()
             return glyph
         return None
 
-    def update_glyph(self, session_id: str, glyph_id: str, char: Optional[str] = None) -> bool:
+    def update_glyph(self, session_id: str, glyph_id: str, char: Optional[str] = None,
+                     ignored: Optional[bool] = None) -> bool:
         session = self.get_session(session_id)
         if session:
             for glyph in session.glyphs:
                 if glyph.id == glyph_id:
                     if char is not None:
                         glyph.char = char
+                    if ignored is not None:
+                        glyph.ignored = ignored
                     self.save_sessions()
                     return True
         return False

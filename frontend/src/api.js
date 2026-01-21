@@ -132,6 +132,13 @@ export async function clearOcrRegions(sessionId) {
   return res.json()
 }
 
+export async function resetRegionValidator(sessionId, regionId) {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/ocr-regions/${regionId}/reset-validator`, {
+    method: 'POST'
+  })
+  return res.json()
+}
+
 export function getStreamUrl(sessionId, type) {
   return `/stream/${sessionId}/${type}`
 }
@@ -162,20 +169,24 @@ export async function listGlyphs(sessionId) {
   return data.glyphs
 }
 
-export async function addGlyph(sessionId, char, template, width, height) {
+export async function addGlyph(sessionId, char, template, width, height, ignored = false) {
   const res = await fetch(`${API_BASE}/sessions/${sessionId}/glyphs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ char, template, width, height })
+    body: JSON.stringify({ char, template, width, height, ignored })
   })
   return res.json()
 }
 
-export async function updateGlyph(sessionId, glyphId, char) {
+export async function updateGlyph(sessionId, glyphId, char = null, ignored = null) {
+  const body = {}
+  if (char !== null) body.char = char
+  if (ignored !== null) body.ignored = ignored
+  
   const res = await fetch(`${API_BASE}/sessions/${sessionId}/glyphs/${glyphId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ char })
+    body: JSON.stringify(body)
   })
   return res.json()
 }
@@ -215,5 +226,56 @@ export async function combineGlyphs(sessionId, indices, regionId = null) {
     body: JSON.stringify({ indices, region_id: regionId })
   })
   if (!res.ok) throw new Error('Failed to combine glyphs')
+  return res.json()
+}
+
+// ============= Global Glyph Storage API =============
+
+export async function listGlyphSets() {
+  const res = await fetch(`${API_BASE}/glyph-sets`)
+  const data = await res.json()
+  return data.glyph_sets
+}
+
+export async function getGlyphSet(setId) {
+  const res = await fetch(`${API_BASE}/glyph-sets/${setId}`)
+  if (!res.ok) throw new Error('Glyph set not found')
+  return res.json()
+}
+
+export async function createGlyphSet(name, glyphs) {
+  const res = await fetch(`${API_BASE}/glyph-sets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, glyphs })
+  })
+  if (!res.ok) throw new Error('Failed to create glyph set')
+  return res.json()
+}
+
+export async function deleteGlyphSet(setId) {
+  const res = await fetch(`${API_BASE}/glyph-sets/${setId}`, {
+    method: 'DELETE'
+  })
+  return res.json()
+}
+
+export async function exportGlyphs(sessionId, name) {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/export-glyphs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  })
+  if (!res.ok) throw new Error('Failed to export glyphs')
+  return res.json()
+}
+
+export async function importGlyphs(sessionId, setId, replace = false) {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/import-glyphs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ set_id: setId, replace })
+  })
+  if (!res.ok) throw new Error('Failed to import glyphs')
   return res.json()
 }

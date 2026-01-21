@@ -7,38 +7,6 @@ import cv2
 
 from glyphs import recognize_with_glyphs, glyphs_to_text
 
-# Lazy-load heavy OCR libraries to speed up startup
-TESSERACT_AVAILABLE = False
-EASYOCR_AVAILABLE = False
-_pytesseract = None
-_easyocr = None
-
-def _check_tesseract():
-    """Lazy check for tesseract availability."""
-    global TESSERACT_AVAILABLE, _pytesseract
-    if _pytesseract is None:
-        try:
-            import pytesseract
-            _pytesseract = pytesseract
-            # Verify tesseract is actually installed
-            _pytesseract.get_tesseract_version()
-            TESSERACT_AVAILABLE = True
-        except Exception:
-            TESSERACT_AVAILABLE = False
-    return TESSERACT_AVAILABLE
-
-def _check_easyocr():
-    """Lazy check for EasyOCR availability."""
-    global EASYOCR_AVAILABLE, _easyocr
-    if _easyocr is None:
-        try:
-            import easyocr
-            _easyocr = easyocr
-            EASYOCR_AVAILABLE = True
-        except ImportError:
-            EASYOCR_AVAILABLE = False
-    return EASYOCR_AVAILABLE
-
 
 DEBUG_DIR = "./debug"
 
@@ -58,38 +26,8 @@ def save_debug_image(session_id: str, region_name: str, image: np.ndarray):
     cv2.imwrite(filepath, image)
 
 
-def preprocess_for_ocr(frame: np.ndarray) -> np.ndarray:
-    """
-    Preprocess a binary image for OCR.
-    Input is expected to be pure black (#000000) and white (#ffffff).
-    Converts white pixels (content) to black text on white background (OCR standard).
-    """
-    if len(frame.shape) == 3:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = frame.copy()
-    
-    # The input has white pixels as content, black as background
-    # OCR engines work best with dark text on light background
-    # So we invert: white content -> black text, black bg -> white bg
-    inverted = cv2.bitwise_not(gray)
-    
-    # Scale up for better recognition (3x)
-    scale_factor = 3
-    scaled = cv2.resize(inverted, None, fx=scale_factor, fy=scale_factor, interpolation=cv2.INTER_CUBIC)
-    
-    # Re-threshold to ensure pure black/white after scaling
-    _, binary = cv2.threshold(scaled, 127, 255, cv2.THRESH_BINARY)
-    
-    # Add white border (helps OCR engines)
-    border_size = 20
-    bordered = cv2.copyMakeBorder(binary, border_size, border_size, border_size, border_size, 
-                                   cv2.BORDER_CONSTANT, value=255)
-    
-    return bordered
-
-
 class OCREngine:
+    """OCR Engine using glyph template matching."""
     _instance: Optional['OCREngine'] = None
     _lock = threading.Lock()
 
@@ -104,76 +42,22 @@ class OCREngine:
         if self._initialized:
             return
         
-        self.easyocr_reader = None
         self._initialized = True
-        self._tesseract_checked = False
-        self._easyocr_checked = False
-        self.tesseract_available = False
-        # Don't initialize OCR backends on startup - lazy load on first use
-        print("OCR Engine initialized (backends will load on first use)")
+        print("OCR Engine initialized (glyph-based)")
 
-    def _ensure_tesseract(self):
-        """Lazy-load tesseract on first use."""
-        if self._tesseract_checked:
-            return self.tesseract_available
-        self._tesseract_checked = True
-        
-        if _check_tesseract():
-            try:
-                version = _pytesseract.get_tesseract_version()
-                print(f"Tesseract OCR loaded: {version}")
-                self.tesseract_available = True
-            except Exception as e:
-                print(f"Tesseract not available: {e}")
-        return self.tesseract_available
-
-    def _ensure_easyocr(self):
-        """Lazy-load EasyOCR on first use (slow - loads ML models)."""
-        if self._easyocr_checked:
-            return self.easyocr_reader is not None
-        self._easyocr_checked = True
-        
-        if _check_easyocr():
-            try:
-                print("Loading EasyOCR (this may take a moment)...")
-                self.easyocr_reader = _easyocr.Reader(['en'], gpu=False)
-                print("EasyOCR loaded")
-            except Exception as e:
-                print(f"Failed to initialize EasyOCR: {e}")
-        return self.easyocr_reader is not None
-
-    def read_text(self, frame: np.ndarray, backend: str = "tesseract", 
+    def read_text(self, frame: np.ndarray, backend: str = "glyphs", 
                   session_id: str = "", region_name: str = "",
                   glyph_templates: Optional[list[dict]] = None) -> list[dict]:
         """
         Run OCR on a frame and return detected text.
         Input should be a binary image (black #000000 and white #ffffff).
-        backend: "tesseract", "easyocr", or "glyphs"
+        Uses glyph template matching.
         """
         try:
             if session_id and region_name:
                 save_debug_image(session_id, region_name, frame)
             
-            # Glyph-based recognition (uses raw binary image)
-            if backend == "glyphs":
-                return self._read_glyphs(frame, glyph_templates or [])
-            
-            # Traditional OCR (needs preprocessing)
-            processed = preprocess_for_ocr(frame)
-            
-            if backend == "tesseract" and self._ensure_tesseract():
-                return self._read_tesseract(processed)
-            elif backend == "easyocr" and self._ensure_easyocr():
-                return self._read_easyocr(processed)
-            elif self._ensure_tesseract():
-                # Fallback to tesseract if available
-                return self._read_tesseract(processed)
-            elif self._ensure_easyocr():
-                # Fallback to easyocr if available
-                return self._read_easyocr(processed)
-            else:
-                print("No OCR backend available!")
-                return []
+            return self._read_glyphs(frame, glyph_templates or [])
         except Exception as e:
             print(f"OCR error: {e}")
             return []
@@ -194,63 +78,6 @@ class OCREngine:
                 "confidence": float(avg_conf)  # Ensure Python float for JSON serialization
             }]
         return []
-
-    def _read_tesseract(self, processed: np.ndarray) -> list[dict]:
-        """Use Tesseract for OCR - optimized for seven-segment displays."""
-        # PSM 7 = single line of text
-        config = '--psm 7 -c tessedit_char_whitelist=0123456789:.-'
-        
-        try:
-            text = _pytesseract.image_to_string(processed, config=config).strip()
-            text = text.replace(' ', '').replace('\n', '')
-            
-            if text:
-                return [{
-                    "bbox": [],
-                    "text": text,
-                    "confidence": 0.9
-                }]
-            
-            # Try PSM 6 (block of text) as fallback
-            config_fallback = '--psm 6 -c tessedit_char_whitelist=0123456789:.-'
-            text = _pytesseract.image_to_string(processed, config=config_fallback).strip()
-            text = text.replace(' ', '').replace('\n', '')
-            
-            if text:
-                return [{
-                    "bbox": [],
-                    "text": text,
-                    "confidence": 0.8
-                }]
-                
-        except Exception as e:
-            print(f"Tesseract error: {e}")
-        
-        return []
-
-    def _read_easyocr(self, processed: np.ndarray) -> list[dict]:
-        """Use EasyOCR."""
-        if self.easyocr_reader is None:
-            return []
-            
-        results = self.easyocr_reader.readtext(
-            processed, 
-            detail=1, 
-            paragraph=False,
-            min_size=10,
-            text_threshold=0.5,
-            low_text=0.3,
-            allowlist='0123456789:.-'
-        )
-        
-        return [
-            {
-                "bbox": [[int(p[0]), int(p[1])] for p in result[0]],
-                "text": result[1],
-                "confidence": float(result[2])
-            }
-            for result in results
-        ]
 
 
 class OCRWorker:

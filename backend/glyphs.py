@@ -247,14 +247,22 @@ def recognize_with_glyphs(binary_image: np.ndarray, templates: list[dict],
     Returns:
         List of recognized characters with bounding boxes and confidence
     """
+    # Filter out ignored templates
+    active_templates = [t for t in templates if not t.get('ignored', False)]
+    
     glyphs = find_glyphs(binary_image, min_area, merge_vertical=merge_vertical)
     
     results = []
     for glyph in glyphs:
-        match = match_glyph(glyph['image'], templates)
+        match = match_glyph(glyph['image'], active_templates)
         
         if match:
             char, confidence = match
+            # Check if this matched an ignored glyph (skip it from output)
+            matched_template = next((t for t in templates if t['char'] == char), None)
+            if matched_template and matched_template.get('ignored', False):
+                # Skip ignored glyphs entirely (don't add to results)
+                continue
             results.append({
                 'char': char,
                 'confidence': float(confidence),  # Ensure Python float

@@ -39,6 +39,7 @@ class Command(Enum):
     UPDATE_OCR_REGION = "update_ocr_region"
     DELETE_OCR_REGION = "delete_ocr_region"
     CLEAR_OCR_REGIONS = "clear_ocr_regions"
+    RESET_REGION_VALIDATOR = "reset_region_validator"
     
     # Glyph commands
     LIST_GLYPHS = "list_glyphs"
@@ -48,6 +49,14 @@ class Command(Enum):
     CLEAR_GLYPHS = "clear_glyphs"
     DETECT_GLYPHS = "detect_glyphs"
     COMBINE_GLYPHS = "combine_glyphs"
+    
+    # Global glyph storage commands
+    LIST_GLYPH_SETS = "list_glyph_sets"
+    GET_GLYPH_SET = "get_glyph_set"
+    CREATE_GLYPH_SET = "create_glyph_set"
+    DELETE_GLYPH_SET = "delete_glyph_set"
+    EXPORT_GLYPHS = "export_glyphs"
+    IMPORT_GLYPHS = "import_glyphs"
     
     # OCR commands
     GET_OCR_RESULTS = "get_ocr_results"

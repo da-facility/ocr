@@ -170,6 +170,8 @@ class OcrRegionUpdateRequest(BaseModel):
     height: Optional[int] = None
     label: Optional[str] = None
     ocr_backend: Optional[str] = None
+    region_type: Optional[str] = None  # "generic", "time", "score"
+    score_subtype: Optional[str] = None  # For score type: None or "singles"
 
 
 @app.get("/api/cameras")
@@ -364,11 +366,27 @@ async def update_ocr_region(session_id: str, region_id: str, request: OcrRegionU
         width=request.width,
         height=request.height,
         label=request.label,
-        ocr_backend=request.ocr_backend
+        ocr_backend=request.ocr_backend,
+        region_type=request.region_type,
+        score_subtype=request.score_subtype
     )
     if not response.success or not response.data:
         raise HTTPException(status_code=400, detail="Session/region not found or name already exists")
     return {"status": "updated"}
+
+
+@app.post("/api/sessions/{session_id}/ocr-regions/{region_id}/reset-validator")
+async def reset_region_validator(session_id: str, region_id: str):
+    """Reset the validator for a score region (allows any next value)."""
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.RESET_REGION_VALIDATOR,
+        session_id=session_id,
+        region_id=region_id
+    )
+    if not response.success or not response.data:
+        raise HTTPException(status_code=404, detail="Session or region not found")
+    return {"status": "reset"}
 
 
 @app.delete("/api/sessions/{session_id}/ocr-regions/{region_id}")
@@ -402,10 +420,12 @@ class GlyphRequest(BaseModel):
     template: list[list[int]]
     width: int
     height: int
+    ignored: bool = False
 
 
 class GlyphUpdateRequest(BaseModel):
-    char: str
+    char: Optional[str] = None
+    ignored: Optional[bool] = None
 
 
 @app.get("/api/sessions/{session_id}/glyphs")
@@ -428,7 +448,8 @@ async def add_glyph(session_id: str, request: GlyphRequest):
         char=request.char,
         template=request.template,
         width=request.width,
-        height=request.height
+        height=request.height,
+        ignored=request.ignored
     )
     if not response.success or response.data is None:
         raise HTTPException(status_code=400, detail="Failed to add glyph")
@@ -437,13 +458,14 @@ async def add_glyph(session_id: str, request: GlyphRequest):
 
 @app.put("/api/sessions/{session_id}/glyphs/{glyph_id}")
 async def update_glyph(session_id: str, glyph_id: str, request: GlyphUpdateRequest):
-    """Update a glyph's character label."""
+    """Update a glyph's character label or ignored status."""
     client = get_ipc_client()
     response = client.send_command(
         Command.UPDATE_GLYPH,
         session_id=session_id,
         glyph_id=glyph_id,
-        char=request.char
+        char=request.char,
+        ignored=request.ignored
     )
     if not response.success or not response.data:
         raise HTTPException(status_code=404, detail="Session or glyph not found")
@@ -516,6 +538,95 @@ async def combine_glyphs(session_id: str, request: CombineGlyphsRequest):
     if not response.success or response.data is None:
         raise HTTPException(status_code=400, detail="Invalid glyph indices")
     return response.data
+
+
+# ============= Global Glyph Storage =============
+
+@app.get("/api/glyph-sets")
+async def list_glyph_sets():
+    """List all global glyph sets."""
+    client = get_ipc_client()
+    response = client.send_command(Command.LIST_GLYPH_SETS)
+    if not response.success:
+        raise HTTPException(status_code=500, detail=response.error or "Failed to list glyph sets")
+    return {"glyph_sets": response.data}
+
+
+@app.get("/api/glyph-sets/{set_id}")
+async def get_glyph_set(set_id: str):
+    """Get a specific glyph set with all its glyphs."""
+    client = get_ipc_client()
+    response = client.send_command(Command.GET_GLYPH_SET, set_id=set_id)
+    if not response.success or response.data is None:
+        raise HTTPException(status_code=404, detail="Glyph set not found")
+    return response.data
+
+
+class CreateGlyphSetRequest(BaseModel):
+    name: str
+    glyphs: list[dict]
+
+
+@app.post("/api/glyph-sets")
+async def create_glyph_set(request: CreateGlyphSetRequest):
+    """Create a new glyph set from provided glyphs."""
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.CREATE_GLYPH_SET,
+        name=request.name,
+        glyphs=request.glyphs
+    )
+    if not response.success or response.data is None:
+        raise HTTPException(status_code=400, detail="Failed to create glyph set")
+    return response.data
+
+
+@app.delete("/api/glyph-sets/{set_id}")
+async def delete_glyph_set(set_id: str):
+    """Delete a glyph set."""
+    client = get_ipc_client()
+    response = client.send_command(Command.DELETE_GLYPH_SET, set_id=set_id)
+    if not response.success or not response.data:
+        raise HTTPException(status_code=404, detail="Glyph set not found")
+    return {"status": "deleted"}
+
+
+class ExportGlyphsRequest(BaseModel):
+    name: str
+
+
+@app.post("/api/sessions/{session_id}/export-glyphs")
+async def export_glyphs(session_id: str, request: ExportGlyphsRequest):
+    """Export all glyphs from a session to a new global glyph set."""
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.EXPORT_GLYPHS,
+        session_id=session_id,
+        name=request.name
+    )
+    if not response.success or response.data is None:
+        raise HTTPException(status_code=400, detail="Failed to export glyphs (no glyphs in session?)")
+    return response.data
+
+
+class ImportGlyphsRequest(BaseModel):
+    set_id: str
+    replace: bool = False
+
+
+@app.post("/api/sessions/{session_id}/import-glyphs")
+async def import_glyphs(session_id: str, request: ImportGlyphsRequest):
+    """Import a glyph set into a session."""
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.IMPORT_GLYPHS,
+        session_id=session_id,
+        set_id=request.set_id,
+        replace=request.replace
+    )
+    if not response.success or not response.data:
+        raise HTTPException(status_code=400, detail="Failed to import glyphs")
+    return {"status": "imported"}
 
 
 def generate_mjpeg_stream(session_id: str, stream_type: str):

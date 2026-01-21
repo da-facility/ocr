@@ -1,6 +1,10 @@
 <script setup>
-import { ref, computed } from 'vue'
-import { detectGlyphs, addGlyph, updateGlyph, deleteGlyph, clearGlyphs, combineGlyphs } from '../api'
+import { ref, computed, onMounted } from 'vue'
+import { 
+  detectGlyphs, addGlyph, updateGlyph, deleteGlyph, clearGlyphs, combineGlyphs,
+  listGlyphSets, exportGlyphs, importGlyphs, deleteGlyphSet,
+  updateOcrRegion, resetRegionValidator
+} from '../api'
 
 const props = defineProps({
   session: Object,
@@ -10,7 +14,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['delete-region', 'clear-regions', 'rename-region', 'update-backend', 'glyphs-updated'])
+const emit = defineEmits(['delete-region', 'clear-regions', 'rename-region', 'glyphs-updated', 'region-updated'])
 
 const colors = ['#00d9ff', '#00ff9d', '#ff6b6b', '#ffb347', '#c084fc', '#f472b6']
 const editingId = ref(null)
@@ -24,6 +28,14 @@ const selectedRegionForGlyphs = ref(null)
 const mergeVertical = ref(true)  // Auto-merge vertical glyphs like ':'
 const selectedGlyphIndices = ref(new Set())  // For manual combining
 const combineLabel = ref('')  // Label for combined glyph
+
+// Glyph storage state
+const glyphSets = ref([])
+const showExportDialog = ref(false)
+const showImportDialog = ref(false)
+const exportName = ref('')
+const selectedImportSet = ref(null)
+const importReplace = ref(false)
 
 function getColor(index) {
   return colors[index % colors.length]
@@ -132,17 +144,41 @@ function clearSelection() {
   combineLabel.value = ''
 }
 
-async function handleSaveGlyph(glyph) {
+async function handleSaveGlyph(glyph, ignored = false) {
   const char = glyphLabels.value[glyph.index]
   if (!char || !props.session) return
   
   try {
-    await addGlyph(props.session.id, char, glyph.template, glyph.width, glyph.height)
+    await addGlyph(props.session.id, char, glyph.template, glyph.width, glyph.height, ignored)
     emit('glyphs-updated')
     // Remove from detected list
     detectedGlyphs.value = detectedGlyphs.value.filter(g => g.index !== glyph.index)
   } catch (e) {
     console.error('Failed to save glyph:', e)
+  }
+}
+
+async function handleIgnoreGlyph(glyph) {
+  if (!props.session) return
+  
+  try {
+    // Save as ignored glyph with placeholder character
+    await addGlyph(props.session.id, '_', glyph.template, glyph.width, glyph.height, true)
+    emit('glyphs-updated')
+    // Remove from detected list
+    detectedGlyphs.value = detectedGlyphs.value.filter(g => g.index !== glyph.index)
+  } catch (e) {
+    console.error('Failed to ignore glyph:', e)
+  }
+}
+
+async function handleToggleIgnored(glyphId, currentIgnored) {
+  if (!props.session) return
+  try {
+    await updateGlyph(props.session.id, glyphId, null, !currentIgnored)
+    emit('glyphs-updated')
+  } catch (e) {
+    console.error('Failed to toggle ignored:', e)
   }
 }
 
@@ -165,6 +201,107 @@ async function handleClearGlyphs() {
     console.error('Failed to clear glyphs:', e)
   }
 }
+
+// Glyph storage functions
+async function loadGlyphSets() {
+  try {
+    glyphSets.value = await listGlyphSets()
+  } catch (e) {
+    console.error('Failed to load glyph sets:', e)
+  }
+}
+
+async function handleExportGlyphs() {
+  if (!props.session || !exportName.value.trim()) return
+  
+  try {
+    await exportGlyphs(props.session.id, exportName.value.trim())
+    showExportDialog.value = false
+    exportName.value = ''
+    await loadGlyphSets()
+  } catch (e) {
+    console.error('Failed to export glyphs:', e)
+  }
+}
+
+async function handleImportGlyphs() {
+  if (!props.session || !selectedImportSet.value) return
+  
+  try {
+    await importGlyphs(props.session.id, selectedImportSet.value, importReplace.value)
+    showImportDialog.value = false
+    selectedImportSet.value = null
+    importReplace.value = false
+    emit('glyphs-updated')
+  } catch (e) {
+    console.error('Failed to import glyphs:', e)
+  }
+}
+
+async function handleDeleteGlyphSet(setId) {
+  try {
+    await deleteGlyphSet(setId)
+    await loadGlyphSets()
+  } catch (e) {
+    console.error('Failed to delete glyph set:', e)
+  }
+}
+
+function openExportDialog() {
+  exportName.value = props.session?.camera_name || `Session ${props.session?.id}`
+  showExportDialog.value = true
+}
+
+function openImportDialog() {
+  loadGlyphSets()
+  showImportDialog.value = true
+}
+
+// Region type functions
+async function handleRegionTypeChange(regionId, regionType) {
+  if (!props.session) return
+  try {
+    await updateOcrRegion(props.session.id, regionId, { region_type: regionType })
+    emit('region-updated')
+  } catch (e) {
+    console.error('Failed to update region type:', e)
+  }
+}
+
+async function handleScoreSubtypeChange(regionId, subtype) {
+  if (!props.session) return
+  try {
+    await updateOcrRegion(props.session.id, regionId, { score_subtype: subtype || '' })
+    emit('region-updated')
+  } catch (e) {
+    console.error('Failed to update score subtype:', e)
+  }
+}
+
+async function handleResetValidator(regionId) {
+  if (!props.session) return
+  try {
+    await resetRegionValidator(props.session.id, regionId)
+  } catch (e) {
+    console.error('Failed to reset validator:', e)
+  }
+}
+
+function getResultText(regionName) {
+  const result = props.ocrResults[regionName]
+  if (!result) return null
+  return result.text || null
+}
+
+function getResultTime(regionName) {
+  const result = props.ocrResults[regionName]
+  if (!result || !result.time) return null
+  return result.time
+}
+
+onMounted(() => {
+  loadGlyphSets()
+})
 
 function templateToDataUrl(template) {
   // Convert template (2D array) to a canvas data URL for display
@@ -257,18 +394,40 @@ function templateToDataUrl(template) {
             {{ region.x }}, {{ region.y }} — {{ region.width }}×{{ region.height }}
           </div>
 
-          <!-- Backend selector -->
+          <!-- Type selector -->
           <div class="mt-2 flex items-center gap-2">
-            <span class="text-xs text-midnight-500">Backend:</span>
+            <span class="text-xs text-midnight-500">Type:</span>
             <select
-              :value="region.ocr_backend || 'tesseract'"
-              @change="(e) => $emit('update-backend', region.id, e.target.value)"
+              :value="region.region_type || 'generic'"
+              @change="(e) => handleRegionTypeChange(region.id, e.target.value)"
               class="bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
             >
-              <option value="tesseract">Tesseract</option>
-              <option value="easyocr">EasyOCR</option>
-              <option value="glyphs">Glyphs (Custom)</option>
+              <option value="generic">Generic</option>
+              <option value="time">Time</option>
+              <option value="score">Score</option>
             </select>
+
+            <!-- Score subtype selector -->
+            <template v-if="region.region_type === 'score'">
+              <select
+                :value="region.score_subtype || ''"
+                @change="(e) => handleScoreSubtypeChange(region.id, e.target.value)"
+                class="bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
+              >
+                <option value="">Any</option>
+                <option value="singles">Singles (+/-1)</option>
+              </select>
+              
+              <!-- Reset button for singles mode -->
+              <button
+                v-if="region.score_subtype === 'singles'"
+                @click="handleResetValidator(region.id)"
+                class="px-2 py-1 bg-ember-500/20 hover:bg-ember-500/30 text-ember-400 text-xs rounded"
+                title="Reset validator state"
+              >
+                Reset
+              </button>
+            </template>
           </div>
 
           <!-- OCR Result -->
@@ -279,12 +438,28 @@ function templateToDataUrl(template) {
                 {{ getRegionConfidence(region.label) }}%
               </span>
             </div>
-            <div 
-              class="font-mono text-sm p-2 rounded bg-midnight-900/50"
-              :class="hasDetections(region.label) ? 'text-electric-400' : 'text-midnight-600 italic'"
-            >
-              {{ getRegionText(region.label) || 'No text detected' }}
-            </div>
+            
+            <!-- Time display for time type -->
+            <template v-if="region.region_type === 'time' && getResultTime(region.label)">
+              <div class="font-mono text-sm p-2 rounded bg-midnight-900/50 text-electric-400">
+                {{ getResultTime(region.label).formatted }}
+              </div>
+              <div class="text-xs text-midnight-600 mt-1">
+                {{ getResultTime(region.label).minutes }}m {{ getResultTime(region.label).seconds }}s
+                <span v-if="getResultTime(region.label).centiseconds">.{{ getResultTime(region.label).centiseconds }}cs</span>
+                ({{ getResultTime(region.label).total_seconds.toFixed(2) }}s total)
+              </div>
+            </template>
+            
+            <!-- Default display for other types -->
+            <template v-else>
+              <div 
+                class="font-mono text-sm p-2 rounded bg-midnight-900/50"
+                :class="getResultText(region.label) ? 'text-electric-400' : 'text-midnight-600 italic'"
+              >
+                {{ getResultText(region.label) || 'No text detected' }}
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -296,13 +471,28 @@ function templateToDataUrl(template) {
     <section>
       <div class="flex items-center justify-between mb-4">
         <h3 class="text-xs uppercase tracking-widest text-midnight-500">Glyph Training</h3>
-        <button 
-          v-if="session?.glyphs?.length"
-          @click="handleClearGlyphs"
-          class="text-xs text-midnight-600 hover:text-ember-400 transition-colors"
-        >
-          Clear All
-        </button>
+        <div class="flex items-center gap-2">
+          <button 
+            v-if="session?.glyphs?.length"
+            @click="openExportDialog"
+            class="text-xs text-electric-400 hover:text-electric-300 transition-colors"
+          >
+            Export
+          </button>
+          <button 
+            @click="openImportDialog"
+            class="text-xs text-electric-400 hover:text-electric-300 transition-colors"
+          >
+            Import
+          </button>
+          <button 
+            v-if="session?.glyphs?.length"
+            @click="handleClearGlyphs"
+            class="text-xs text-midnight-600 hover:text-ember-400 transition-colors"
+          >
+            Clear All
+          </button>
+        </div>
       </div>
 
       <p class="text-xs text-midnight-600 mb-3">
@@ -405,13 +595,22 @@ function templateToDataUrl(template) {
               class="w-full bg-midnight-900 border border-midnight-700 rounded px-1 py-0.5 text-xs text-center text-midnight-200 focus:outline-none focus:border-electric-500"
               @keyup.enter="handleSaveGlyph(glyph)"
             />
-            <button
-              @click.stop="handleSaveGlyph(glyph)"
-              :disabled="!glyphLabels[glyph.index]"
-              class="w-full mt-1 px-2 py-0.5 bg-electric-500/20 hover:bg-electric-500/30 disabled:bg-midnight-700/50 text-electric-400 disabled:text-midnight-600 text-xs rounded"
-            >
-              Save
-            </button>
+            <div class="flex gap-1 mt-1">
+              <button
+                @click.stop="handleSaveGlyph(glyph)"
+                :disabled="!glyphLabels[glyph.index]"
+                class="flex-1 px-2 py-0.5 bg-electric-500/20 hover:bg-electric-500/30 disabled:bg-midnight-700/50 text-electric-400 disabled:text-midnight-600 text-xs rounded"
+              >
+                Save
+              </button>
+              <button
+                @click.stop="handleIgnoreGlyph(glyph)"
+                class="px-2 py-0.5 bg-midnight-700 hover:bg-midnight-600 text-midnight-400 text-xs rounded"
+                title="Ignore this glyph"
+              >
+                Ign
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -423,20 +622,36 @@ function templateToDataUrl(template) {
           <div 
             v-for="glyph in session.glyphs" 
             :key="glyph.id"
-            class="bg-midnight-800 rounded p-2 text-center relative group"
+            class="rounded p-2 text-center relative group"
+            :class="glyph.ignored ? 'bg-midnight-900/50 border border-midnight-700' : 'bg-midnight-800'"
           >
             <img 
               :src="templateToDataUrl(glyph.template)" 
-              class="w-6 h-9 mx-auto mb-1 object-contain bg-white rounded"
+              class="w-6 h-9 mx-auto mb-1 object-contain rounded"
+              :class="glyph.ignored ? 'bg-midnight-700 opacity-50' : 'bg-white'"
               style="image-rendering: pixelated;"
             />
-            <div class="text-xs text-electric-400 font-mono">{{ glyph.char }}</div>
-            <button
-              @click="handleDeleteGlyph(glyph.id)"
-              class="absolute -top-1 -right-1 w-4 h-4 bg-ember-500 text-white rounded-full text-xs opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center"
+            <div 
+              class="text-xs font-mono"
+              :class="glyph.ignored ? 'text-midnight-600 line-through' : 'text-electric-400'"
             >
-              ×
-            </button>
+              {{ glyph.ignored ? 'IGN' : glyph.char }}
+            </div>
+            <div class="absolute -top-1 -right-1 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button
+                @click="handleToggleIgnored(glyph.id, glyph.ignored)"
+                class="w-4 h-4 bg-midnight-600 hover:bg-midnight-500 text-midnight-300 rounded-full text-xs flex items-center justify-center"
+                :title="glyph.ignored ? 'Un-ignore' : 'Ignore'"
+              >
+                {{ glyph.ignored ? '✓' : '−' }}
+              </button>
+              <button
+                @click="handleDeleteGlyph(glyph.id)"
+                class="w-4 h-4 bg-ember-500 text-white rounded-full text-xs flex items-center justify-center"
+              >
+                ×
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -489,5 +704,96 @@ function templateToDataUrl(template) {
         <p class="text-midnight-600">Returns plain text result for a specific region</p>
       </div>
     </section>
+
+    <!-- Export Dialog -->
+    <div v-if="showExportDialog" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div class="bg-midnight-900 rounded-lg p-5 w-80 border border-midnight-700">
+        <h4 class="text-sm font-medium text-midnight-200 mb-4">Export Glyphs</h4>
+        <input
+          v-model="exportName"
+          placeholder="Glyph set name"
+          class="w-full bg-midnight-800 border border-midnight-700 rounded px-3 py-2 text-sm text-midnight-200 focus:outline-none focus:border-electric-500 mb-4"
+          @keyup.enter="handleExportGlyphs"
+        />
+        <div class="flex justify-end gap-2">
+          <button
+            @click="showExportDialog = false"
+            class="px-3 py-1.5 text-sm text-midnight-400 hover:text-midnight-300"
+          >
+            Cancel
+          </button>
+          <button
+            @click="handleExportGlyphs"
+            :disabled="!exportName.trim()"
+            class="px-3 py-1.5 bg-electric-500 hover:bg-electric-400 disabled:bg-midnight-700 text-midnight-950 disabled:text-midnight-500 text-sm rounded"
+          >
+            Export
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Import Dialog -->
+    <div v-if="showImportDialog" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div class="bg-midnight-900 rounded-lg p-5 w-96 border border-midnight-700 max-h-[80vh] flex flex-col">
+        <h4 class="text-sm font-medium text-midnight-200 mb-4">Import Glyphs</h4>
+        
+        <div v-if="!glyphSets.length" class="text-sm text-midnight-500 text-center py-4">
+          No glyph sets saved yet. Export glyphs from a session first.
+        </div>
+        
+        <div v-else class="flex-1 overflow-y-auto space-y-2 mb-4">
+          <div
+            v-for="gs in glyphSets"
+            :key="gs.id"
+            @click="selectedImportSet = gs.id"
+            class="p-3 rounded-lg cursor-pointer transition-all"
+            :class="selectedImportSet === gs.id 
+              ? 'bg-electric-500/20 border border-electric-500' 
+              : 'bg-midnight-800 border border-transparent hover:border-midnight-600'"
+          >
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="text-sm text-midnight-200">{{ gs.name }}</div>
+                <div class="text-xs text-midnight-500">{{ gs.glyph_count }} glyphs</div>
+              </div>
+              <button
+                @click.stop="handleDeleteGlyphSet(gs.id)"
+                class="p-1 text-midnight-600 hover:text-ember-400 transition-colors"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <label v-if="glyphSets.length" class="flex items-center gap-2 mb-4 text-xs text-midnight-400 cursor-pointer">
+          <input
+            type="checkbox"
+            v-model="importReplace"
+            class="w-3.5 h-3.5 rounded border-midnight-600 bg-midnight-900 text-electric-500 focus:ring-electric-500 focus:ring-offset-0"
+          />
+          <span>Replace existing glyphs (instead of adding)</span>
+        </label>
+
+        <div class="flex justify-end gap-2">
+          <button
+            @click="showImportDialog = false; selectedImportSet = null"
+            class="px-3 py-1.5 text-sm text-midnight-400 hover:text-midnight-300"
+          >
+            Cancel
+          </button>
+          <button
+            @click="handleImportGlyphs"
+            :disabled="!selectedImportSet"
+            class="px-3 py-1.5 bg-electric-500 hover:bg-electric-400 disabled:bg-midnight-700 text-midnight-950 disabled:text-midnight-500 text-sm rounded"
+          >
+            Import
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>

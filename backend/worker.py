@@ -19,10 +19,12 @@ if __name__ == "__main__":
 
 from ipc import IPCServer, IPCMessage, IPCResponse, Command
 from camera import camera_manager, CameraManager
-from sessions import session_manager, SessionManager
+from sessions import session_manager, SessionManager, Glyph
 from processing import process_frame_perspective, process_frame_full, frame_to_jpeg, get_color_at_point
 from ocr import ocr_manager, OCRManager
 from glyphs import get_detected_glyphs_for_training, combine_glyphs_by_indices, GLYPH_SIZE
+from glyph_storage import glyph_storage_manager
+from validators import ScoreValidator, TimeValidator, GenericValidator
 
 
 class WorkerState:
@@ -36,6 +38,43 @@ class WorkerState:
         # OCR result callbacks for streaming to clients
         self.ocr_callbacks: dict[str, list[Callable]] = {}
         self.ocr_lock = threading.Lock()
+        
+        # Validators per region: {session_id: {region_id: validator}}
+        self.validators: dict[str, dict[str, ScoreValidator]] = {}
+        self.validators_lock = threading.Lock()
+    
+    def get_or_create_validator(self, session_id: str, region_id: str, 
+                                 region_type: str, score_subtype: Optional[str]) -> Optional[ScoreValidator]:
+        """Get or create a validator for a region."""
+        if region_type != "score":
+            return None
+        
+        with self.validators_lock:
+            if session_id not in self.validators:
+                self.validators[session_id] = {}
+            
+            if region_id not in self.validators[session_id]:
+                singles_mode = score_subtype == "singles"
+                self.validators[session_id][region_id] = ScoreValidator(singles_mode=singles_mode)
+            else:
+                # Update singles mode if it changed
+                validator = self.validators[session_id][region_id]
+                validator.set_singles_mode(score_subtype == "singles")
+            
+            return self.validators[session_id][region_id]
+    
+    def reset_validator(self, session_id: str, region_id: str) -> bool:
+        """Reset a validator's state."""
+        with self.validators_lock:
+            if session_id in self.validators and region_id in self.validators[session_id]:
+                self.validators[session_id][region_id].reset()
+                return True
+        return False
+    
+    def remove_session_validators(self, session_id: str):
+        """Remove all validators for a session."""
+        with self.validators_lock:
+            self.validators.pop(session_id, None)
 
 
 def start_session_ocr(state: WorkerState, session):
@@ -117,6 +156,7 @@ def register_handlers(server: IPCServer, state: WorkerState):
         
         state.ocr_manager.stop_ocr(session_id)
         state.camera_manager.release_camera(session.camera_index)
+        state.remove_session_validators(session_id)
         state.session_manager.delete_session(session_id)
         return True
     
@@ -215,9 +255,10 @@ def register_handlers(server: IPCServer, state: WorkerState):
     def handle_update_ocr_region(session_id: str, region_id: str, 
                                   x: Optional[int] = None, y: Optional[int] = None,
                                   width: Optional[int] = None, height: Optional[int] = None,
-                                  label: Optional[str] = None, ocr_backend: Optional[str] = None):
+                                  label: Optional[str] = None, ocr_backend: Optional[str] = None,
+                                  region_type: Optional[str] = None, score_subtype: Optional[str] = None):
         return state.session_manager.update_ocr_region(
-            session_id, region_id, x, y, width, height, label, ocr_backend
+            session_id, region_id, x, y, width, height, label, ocr_backend, region_type, score_subtype
         )
     
     def handle_delete_ocr_region(session_id: str, region_id: str):
@@ -225,6 +266,9 @@ def register_handlers(server: IPCServer, state: WorkerState):
     
     def handle_clear_ocr_regions(session_id: str):
         return state.session_manager.clear_ocr_regions(session_id)
+    
+    def handle_reset_region_validator(session_id: str, region_id: str):
+        return state.reset_validator(session_id, region_id)
     
     # ============= Glyph handlers =============
     
@@ -234,14 +278,16 @@ def register_handlers(server: IPCServer, state: WorkerState):
             return None
         return [g.to_dict() for g in session.glyphs]
     
-    def handle_add_glyph(session_id: str, char: str, template: list, width: int, height: int):
-        glyph = state.session_manager.add_glyph(session_id, char, template, width, height)
+    def handle_add_glyph(session_id: str, char: str, template: list, width: int, height: int,
+                         ignored: bool = False):
+        glyph = state.session_manager.add_glyph(session_id, char, template, width, height, ignored)
         if glyph is None:
             return None
         return glyph.to_dict()
     
-    def handle_update_glyph(session_id: str, glyph_id: str, char: str):
-        return state.session_manager.update_glyph(session_id, glyph_id, char)
+    def handle_update_glyph(session_id: str, glyph_id: str, char: Optional[str] = None,
+                            ignored: Optional[bool] = None):
+        return state.session_manager.update_glyph(session_id, glyph_id, char, ignored)
     
     def handle_delete_glyph(session_id: str, glyph_id: str):
         return state.session_manager.delete_glyph(session_id, glyph_id)
@@ -324,6 +370,45 @@ def register_handlers(server: IPCServer, state: WorkerState):
         
         return combine_glyphs_by_indices(processed, indices)
     
+    # ============= Global Glyph Storage handlers =============
+    
+    def handle_list_glyph_sets():
+        return glyph_storage_manager.list_glyph_sets()
+    
+    def handle_get_glyph_set(set_id: str):
+        glyph_set = glyph_storage_manager.get_glyph_set(set_id)
+        if glyph_set is None:
+            return None
+        return glyph_set.to_dict()
+    
+    def handle_create_glyph_set(name: str, glyphs: list):
+        # Convert dicts to Glyph objects
+        glyph_objs = [
+            Glyph(
+                id=g['id'],
+                char=g['char'],
+                template=g['template'],
+                width=g['width'],
+                height=g['height'],
+                ignored=g.get('ignored', False)
+            )
+            for g in glyphs
+        ]
+        glyph_set = glyph_storage_manager.create_glyph_set(name, glyph_objs)
+        return glyph_set.to_dict()
+    
+    def handle_delete_glyph_set(set_id: str):
+        return glyph_storage_manager.delete_glyph_set(set_id)
+    
+    def handle_export_glyphs(session_id: str, name: str):
+        glyph_set = glyph_storage_manager.export_from_session(session_id, name)
+        if glyph_set is None:
+            return None
+        return glyph_set.to_dict()
+    
+    def handle_import_glyphs(session_id: str, set_id: str, replace: bool = False):
+        return glyph_storage_manager.import_to_session(session_id, set_id, replace)
+    
     # ============= OCR Result handlers =============
     
     def handle_get_ocr_results(session_id: str):
@@ -332,11 +417,17 @@ def register_handlers(server: IPCServer, state: WorkerState):
             return None
         
         results = state.ocr_manager.get_results(session_id)
-        region_backends = {r.label: r.ocr_backend for r in session.ocr_regions}
+        
+        # Build lookup for region info
+        region_info = {r.label: r for r in session.ocr_regions}
+        
+        time_validator = TimeValidator()
         
         formatted = {}
         for region_name, detections in results.items():
             texts = [d['text'] for d in detections]
+            raw_text = ' '.join(texts)
+            
             clean_detections = []
             for d in detections:
                 clean_detections.append({
@@ -344,10 +435,35 @@ def register_handlers(server: IPCServer, state: WorkerState):
                     "text": d.get("text", ""),
                     "confidence": float(d.get("confidence", 0))
                 })
+            
+            region = region_info.get(region_name)
+            region_type = region.region_type if region else "generic"
+            score_subtype = region.score_subtype if region else None
+            region_id = region.id if region else None
+            
+            # Apply validation based on region type
+            validated_text = raw_text
+            extra_data = {}
+            
+            if region_type == "score" and region_id:
+                validator = state.get_or_create_validator(session_id, region_id, region_type, score_subtype)
+                if validator:
+                    validated_result = validator.validate(raw_text)
+                    validated_text = validated_result if validated_result else raw_text
+                    extra_data["score_value"] = int(validated_text) if validated_text.isdigit() else None
+                    extra_data["singles_mode"] = validator.singles_mode
+            elif region_type == "time":
+                time_result = time_validator.validate(raw_text)
+                validated_text = time_result["formatted"]
+                extra_data["time"] = time_result
+            
             formatted[region_name] = {
-                "text": ' '.join(texts),
-                "backend": region_backends.get(region_name, "tesseract"),
-                "detections": clean_detections
+                "text": validated_text,
+                "raw_text": raw_text,
+                "backend": "glyphs",
+                "region_type": region_type,
+                "detections": clean_detections,
+                **extra_data
             }
         
         return formatted
@@ -416,6 +532,7 @@ def register_handlers(server: IPCServer, state: WorkerState):
     server.register_handler(Command.UPDATE_OCR_REGION, handle_update_ocr_region)
     server.register_handler(Command.DELETE_OCR_REGION, handle_delete_ocr_region)
     server.register_handler(Command.CLEAR_OCR_REGIONS, handle_clear_ocr_regions)
+    server.register_handler(Command.RESET_REGION_VALIDATOR, handle_reset_region_validator)
     
     server.register_handler(Command.LIST_GLYPHS, handle_list_glyphs)
     server.register_handler(Command.ADD_GLYPH, handle_add_glyph)
@@ -424,6 +541,13 @@ def register_handlers(server: IPCServer, state: WorkerState):
     server.register_handler(Command.CLEAR_GLYPHS, handle_clear_glyphs)
     server.register_handler(Command.DETECT_GLYPHS, handle_detect_glyphs)
     server.register_handler(Command.COMBINE_GLYPHS, handle_combine_glyphs)
+    
+    server.register_handler(Command.LIST_GLYPH_SETS, handle_list_glyph_sets)
+    server.register_handler(Command.GET_GLYPH_SET, handle_get_glyph_set)
+    server.register_handler(Command.CREATE_GLYPH_SET, handle_create_glyph_set)
+    server.register_handler(Command.DELETE_GLYPH_SET, handle_delete_glyph_set)
+    server.register_handler(Command.EXPORT_GLYPHS, handle_export_glyphs)
+    server.register_handler(Command.IMPORT_GLYPHS, handle_import_glyphs)
     
     server.register_handler(Command.GET_OCR_RESULTS, handle_get_ocr_results)
     server.register_handler(Command.GET_REGION_TEXT, handle_get_region_text)
