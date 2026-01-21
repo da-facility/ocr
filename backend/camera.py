@@ -4,85 +4,7 @@ import time
 from typing import Optional
 import numpy as np
 import platform
-import re
-import subprocess
-
-
-def _unique_preserve_order(values: list[str]) -> list[str]:
-    seen = set()
-    result = []
-    for value in values:
-        if value not in seen:
-            seen.add(value)
-            result.append(value)
-    return result
-
-
-def _read_cmd_lines(command: list[str]) -> list[str]:
-    try:
-        result = subprocess.run(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        return []
-
-    lines = []
-    for line in result.stdout.splitlines():
-        cleaned = line.strip()
-        if cleaned:
-            lines.append(cleaned)
-    return lines
-
-
-def _get_system_camera_names() -> list[str]:
-    system = platform.system()
-    names: list[str] = []
-
-    if system == "Windows":
-        primary = _read_cmd_lines(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-PnpDevice -Class Camera -Status OK | "
-                "Select-Object -ExpandProperty FriendlyName",
-            ]
-        )
-        secondary = _read_cmd_lines(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_PnPEntity | "
-                "Where-Object { $_.PNPClass -in @('Camera','Image') } | "
-                "Select-Object -ExpandProperty Name",
-            ]
-        )
-        names = _unique_preserve_order(primary + secondary)
-    elif system == "Darwin":
-        lines = _read_cmd_lines(["system_profiler", "SPCameraDataType"])
-        for line in lines:
-            match = re.match(r"^Model ID:\s*(.+)$", line)
-            if match:
-                names.append(match.group(1).strip())
-    else:
-        # Linux and others: fall back to OpenCV index naming.
-        names = []
-
-    return names
-
-
-def _format_camera_name(index: int, system_names: list[str]) -> str:
-    base = f"Camera {index + 1:02d}"
-    if index < len(system_names):
-        system_name = system_names[index].strip()
-        if system_name and system_name.lower() != base.lower():
-            return f"{base} - {system_name}"
-    return base
+from cv2_enumerate_cameras import enumerate_cameras
 
 
 def _open_video_capture(index: int) -> cv2.VideoCapture:
@@ -204,35 +126,19 @@ class CameraManager:
 
     @staticmethod
     def list_available_cameras(max_cameras: int = 10) -> list[dict]:
-        """List available cameras. Names are based on OpenCV index since 
-        system_profiler and OpenCV don't index consistently."""
+        """List available cameras using cv2_enumerate_cameras without opening devices."""
         available = []
-        system_names = _get_system_camera_names()
-        
-        for i in range(max_cameras):
-            cap = _open_video_capture(i)
-            if cap.isOpened():
-                size = _try_set_resolution(
-                    cap,
-                    [
-                        (1920, 1080),
-                        (1280, 720),
-                        (720, 576),
-                        (640, 480),
-                    ],
-                )
-                if size:
-                    width, height = size
-                else:
-                    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                
-                available.append({
-                    "index": i,
-                    "name": _format_camera_name(i, system_names),
-                    "resolution": f"{width}x{height}"
-                })
-                cap.release()
+        for info in enumerate_cameras():
+            name = info.name or f"Camera {info.index + 1:02d}"
+            available.append(
+                {
+                    "index": info.index,
+                    "name": name,
+                    "vid": info.vid,
+                    "pid": info.pid,
+                    "resolution": "",
+                }
+            )
         return available
 
 

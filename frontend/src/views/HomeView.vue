@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { listCameras, listSessions, createSession, deleteSession } from '../api'
 
@@ -7,40 +7,103 @@ const router = useRouter()
 const cameras = ref([])
 const sessions = ref([])
 const selectedCamera = ref(null)
-const loading = ref(false)
+const camerasLoading = ref(false)
+const sessionsLoading = ref(false)
+const creatingSession = ref(false)
 const error = ref(null)
 
-async function loadData() {
-  loading.value = true
+async function loadCameras() {
+  camerasLoading.value = true
   error.value = null
   try {
-    const [cameraList, sessionList] = await Promise.all([
-      listCameras(),
-      listSessions()
-    ])
-    cameras.value = cameraList
-    sessions.value = sessionList
+    const cameraList = await listCameras()
+    cameras.value = cameraList.map(cam => {
+      const hasIds = cam.pid !== null && cam.pid !== undefined &&
+        cam.vid !== null && cam.vid !== undefined
+      const idLabel = hasIds ? ` (${cam.pid}:${cam.vid})` : ''
+      return {
+        ...cam,
+        display_name: `${cam.name}${idLabel}`
+      }
+    })
     if (cameraList.length > 0 && selectedCamera.value === null) {
       selectedCamera.value = cameraList[0].index
     }
   } catch (e) {
-    error.value = 'Failed to load data. Is the backend running?'
+    error.value = 'Failed to load cameras. Is the backend running?'
   } finally {
-    loading.value = false
+    camerasLoading.value = false
   }
 }
 
+async function loadSessions() {
+  sessionsLoading.value = true
+  error.value = null
+  try {
+    sessions.value = await listSessions()
+  } catch (e) {
+    error.value = 'Failed to load sessions. Is the backend running?'
+  } finally {
+    sessionsLoading.value = false
+  }
+}
+
+function matchesSessionCamera(session, camera) {
+  const sessionName = session.camera_device_name || session.camera_name || ''
+  const hasVid = session.camera_vid !== null && session.camera_vid !== undefined
+  const hasPid = session.camera_pid !== null && session.camera_pid !== undefined
+  if (hasVid && hasPid) {
+    return camera.vid === session.camera_vid &&
+      camera.pid === session.camera_pid &&
+      camera.name === sessionName
+  }
+  return camera.name === sessionName
+}
+
+function resolveSessionCamera(session) {
+  if (camerasLoading.value) {
+    return { missing: false, reason: '' }
+  }
+  const matches = cameras.value.filter(camera => matchesSessionCamera(session, camera))
+  if (matches.length === 0) {
+    return { missing: true, reason: 'Camera missing or disconnected.' }
+  }
+  if (matches.length === 1) {
+    return { missing: false, reason: '' }
+  }
+  const indexMatch = matches.find(camera => camera.index === session.camera_index)
+  if (indexMatch) {
+    return { missing: false, reason: '' }
+  }
+  return { missing: true, reason: 'Multiple matching cameras found.' }
+}
+
+const sessionsWithStatus = computed(() => {
+  return sessions.value.map(session => {
+    const status = resolveSessionCamera(session)
+    return {
+      ...session,
+      missingCamera: status.missing,
+      missingReason: status.reason
+    }
+  })
+})
+
 async function handleCreateSession() {
   if (selectedCamera.value === null) return
-  loading.value = true
+  creatingSession.value = true
   try {
     const cam = cameras.value.find(c => c.index === selectedCamera.value)
-    const cameraName = cam ? `${cam.name} (${cam.resolution})` : `Camera ${selectedCamera.value}`
-    const session = await createSession(selectedCamera.value, cameraName)
+    if (!cam) {
+      error.value = 'Selected camera not found'
+      creatingSession.value = false
+      return
+    }
+    const session = await createSession(cam)
     router.push(`/session/${session.id}`)
   } catch (e) {
     error.value = 'Failed to create session'
-    loading.value = false
+    creatingSession.value = false
   }
 }
 
@@ -48,7 +111,7 @@ async function handleDeleteSession(id) {
   if (!confirm('Delete this session?')) return
   try {
     await deleteSession(id)
-    await loadData()
+    await loadSessions()
   } catch (e) {
     error.value = 'Failed to delete session'
   }
@@ -58,7 +121,17 @@ function openSession(id) {
   router.push(`/session/${id}`)
 }
 
-onMounted(loadData)
+function openSessionIfAvailable(session) {
+  if (session.missingCamera) {
+    return
+  }
+  openSession(session.id)
+}
+
+onMounted(() => {
+  loadCameras()
+  loadSessions()
+})
 </script>
 
 <template>
@@ -87,21 +160,22 @@ onMounted(loadData)
               </label>
               <select 
                 v-model="selectedCamera"
-                :disabled="cameras.length === 0"
+                :disabled="cameras.length === 0 || camerasLoading"
                 class="w-full bg-midnight-800 border border-midnight-700 rounded-lg px-4 py-3 text-midnight-100 focus:outline-none focus:border-electric-500 transition-colors"
               >
-                <option v-if="cameras.length === 0" :value="null">No cameras available</option>
+                <option v-if="camerasLoading" :value="null">Loading cameras...</option>
+                <option v-else-if="cameras.length === 0" :value="null">No cameras available</option>
                 <option v-for="cam in cameras" :key="cam.index" :value="cam.index">
-                  {{ cam.name }} ({{ cam.resolution }})
+                  {{ cam.display_name }}
                 </option>
               </select>
             </div>
             <button
               @click="handleCreateSession"
-              :disabled="loading || selectedCamera === null"
+              :disabled="creatingSession || selectedCamera === null || camerasLoading"
               class="px-6 py-3 bg-electric-500 hover:bg-electric-400 disabled:bg-midnight-700 disabled:text-midnight-500 text-midnight-950 font-medium rounded-lg transition-all duration-200 hover:shadow-lg hover:shadow-electric-500/20"
             >
-              <span v-if="loading">Creating...</span>
+              <span v-if="creatingSession">Creating...</span>
               <span v-else>Create Session</span>
             </button>
           </div>
@@ -111,18 +185,31 @@ onMounted(loadData)
       <section>
         <h2 class="text-sm uppercase tracking-widest text-midnight-500 mb-6">Active Sessions</h2>
         
-        <div v-if="sessions.length === 0" class="text-center py-16 text-midnight-600">
+        <div v-if="sessionsLoading" class="text-center py-16 text-midnight-600">
+          <div class="text-6xl mb-4 opacity-30">◎</div>
+          <p>Loading sessions...</p>
+        </div>
+        <div v-else-if="sessionsWithStatus.length === 0" class="text-center py-16 text-midnight-600">
           <div class="text-6xl mb-4 opacity-30">◎</div>
           <p>No active sessions</p>
         </div>
 
         <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <div
-            v-for="session in sessions"
+            v-for="session in sessionsWithStatus"
             :key="session.id"
-            class="group bg-midnight-900/50 border border-midnight-800 hover:border-electric-500/50 rounded-xl p-5 cursor-pointer transition-all duration-200 hover:shadow-lg hover:shadow-electric-500/5"
-            @click="openSession(session.id)"
+            class="group bg-midnight-900/50 border border-midnight-800 rounded-xl p-5 transition-all duration-200"
+            :class="session.missingCamera
+              ? 'opacity-60 cursor-not-allowed'
+              : 'hover:border-electric-500/50 cursor-pointer hover:shadow-lg hover:shadow-electric-500/5'"
+            @click="openSessionIfAvailable(session)"
           >
+            <div
+              v-if="session.missingCamera"
+              class="mb-3 px-3 py-2 rounded-lg border border-ember-500/30 bg-ember-500/10 text-ember-400 text-xs"
+            >
+              {{ session.missingReason }}
+            </div>
             <div class="flex items-start justify-between mb-4">
               <div>
                 <div class="text-xs text-midnight-500 uppercase tracking-wider">Session</div>

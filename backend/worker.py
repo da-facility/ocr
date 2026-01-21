@@ -140,12 +140,24 @@ def register_handlers(server: IPCServer, state: WorkerState):
     
     # ============= Session handlers =============
     
-    def handle_create_session(camera_index: int, camera_name: str = ""):
+    def handle_create_session(
+        camera_index: int,
+        camera_name: str = "",
+        camera_device_name: str = "",
+        camera_vid: Optional[int] = None,
+        camera_pid: Optional[int] = None,
+    ):
         camera = state.camera_manager.acquire_camera(camera_index)
         if camera is None:
             return None
         
-        session = state.session_manager.create_session(camera_index, camera_name)
+        session = state.session_manager.create_session(
+            camera_index,
+            camera_name,
+            camera_device_name,
+            camera_vid,
+            camera_pid,
+        )
         start_session_ocr(state, session)
         return session.to_dict()
     

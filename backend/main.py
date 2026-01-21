@@ -129,6 +129,9 @@ app.add_middleware(
 class CreateSessionRequest(BaseModel):
     camera_index: int
     camera_name: str = ""
+    camera_device_name: str = ""
+    camera_vid: Optional[int] = None
+    camera_pid: Optional[int] = None
 
 
 class PerspectiveRequest(BaseModel):
@@ -202,6 +205,9 @@ async def create_session(request: CreateSessionRequest):
         Command.CREATE_SESSION,
         camera_index=request.camera_index,
         camera_name=request.camera_name,
+        camera_device_name=request.camera_device_name,
+        camera_vid=request.camera_vid,
+        camera_pid=request.camera_pid,
         timeout=5.0
     )
     

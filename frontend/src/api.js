@@ -12,11 +12,17 @@ export async function listSessions() {
   return data.sessions
 }
 
-export async function createSession(cameraIndex, cameraName = '') {
+export async function createSession(camera) {
   const res = await fetch(`${API_BASE}/sessions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ camera_index: cameraIndex, camera_name: cameraName })
+    body: JSON.stringify({
+      camera_index: camera.index,
+      camera_name: camera.display_name || camera.name,
+      camera_device_name: camera.name,
+      camera_vid: camera.vid ?? null,
+      camera_pid: camera.pid ?? null
+    })
   })
   return res.json()
 }

@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
     "opencv-python>=4.8.0",
+    "cv2-enumerate-cameras",
     "easyocr>=1.7.0",
     "numpy>=1.24.0",
     "python-multipart>=0.0.6",

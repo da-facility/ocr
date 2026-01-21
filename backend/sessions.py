@@ -74,6 +74,9 @@ class Session:
     id: str
     camera_index: int
     camera_name: str = ""
+    camera_device_name: str = ""
+    camera_vid: Optional[int] = None
+    camera_pid: Optional[int] = None
     perspective_points: Optional[list[tuple[int, int]]] = None
     perspective_output_size: tuple[int, int] = (800, 600)
     color_filters: list[ColorFilter] = field(default_factory=list)
@@ -88,6 +91,9 @@ class Session:
             "id": self.id,
             "camera_index": self.camera_index,
             "camera_name": self.camera_name,
+            "camera_device_name": self.camera_device_name,
+            "camera_vid": self.camera_vid,
+            "camera_pid": self.camera_pid,
             "perspective_points": self.perspective_points,
             "perspective_output_size": list(self.perspective_output_size),
             "color_filters": [cf.to_dict() for cf in self.color_filters],
@@ -164,6 +170,9 @@ class SessionManager:
                     id=sdata['id'],
                     camera_index=sdata['camera_index'],
                     camera_name=sdata.get('camera_name', ''),
+                    camera_device_name=sdata.get('camera_device_name', sdata.get('camera_name', '')),
+                    camera_vid=sdata.get('camera_vid'),
+                    camera_pid=sdata.get('camera_pid'),
                     perspective_points=perspective_points,
                     perspective_output_size=tuple(sdata.get('perspective_output_size', [800, 600])),
                     color_filters=color_filters,
@@ -179,10 +188,24 @@ class SessionManager:
         except Exception as e:
             print(f"Failed to load sessions: {e}")
 
-    def create_session(self, camera_index: int, camera_name: str = "") -> Session:
+    def create_session(
+        self,
+        camera_index: int,
+        camera_name: str = "",
+        camera_device_name: str = "",
+        camera_vid: Optional[int] = None,
+        camera_pid: Optional[int] = None,
+    ) -> Session:
         session_id = str(uuid.uuid4())[:8]
         default_name = f"Camera {camera_index + 1:02d}"
-        session = Session(id=session_id, camera_index=camera_index, camera_name=camera_name or default_name)
+        session = Session(
+            id=session_id,
+            camera_index=camera_index,
+            camera_name=camera_name or default_name,
+            camera_device_name=camera_device_name or camera_name or default_name,
+            camera_vid=camera_vid,
+            camera_pid=camera_pid,
+        )
         self.sessions[session_id] = session
         self.save_sessions()
         return session
