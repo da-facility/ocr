@@ -234,7 +234,8 @@ def match_glyph(glyph_image: np.ndarray, templates: list[dict],
 
 
 def recognize_with_glyphs(binary_image: np.ndarray, templates: list[dict], 
-                          min_area: int = 50, merge_vertical: bool = True) -> list[dict]:
+                          min_area: int = 50, merge_vertical: bool = True,
+                          threshold: float = 0.7) -> list[dict]:
     """
     Perform OCR using glyph template matching.
     
@@ -243,6 +244,7 @@ def recognize_with_glyphs(binary_image: np.ndarray, templates: list[dict],
         templates: List of glyph templates from session
         min_area: Minimum pixel area for glyph detection
         merge_vertical: If True, auto-merge vertically stacked glyphs
+        threshold: Minimum match score (0-1) to consider a match
     
     Returns:
         List of recognized characters with bounding boxes and confidence
@@ -250,11 +252,12 @@ def recognize_with_glyphs(binary_image: np.ndarray, templates: list[dict],
     # Filter out ignored templates
     active_templates = [t for t in templates if not t.get('ignored', False)]
     
+    threshold = max(0.0, min(1.0, float(threshold)))
     glyphs = find_glyphs(binary_image, min_area, merge_vertical=merge_vertical)
     
     results = []
     for glyph in glyphs:
-        match = match_glyph(glyph['image'], active_templates)
+        match = match_glyph(glyph['image'], active_templates, threshold=threshold)
         
         if match:
             char, confidence = match

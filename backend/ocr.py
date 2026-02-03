@@ -47,7 +47,8 @@ class OCREngine:
 
     def read_text(self, frame: np.ndarray, backend: str = "glyphs", 
                   session_id: str = "", region_name: str = "",
-                  glyph_templates: Optional[list[dict]] = None) -> list[dict]:
+                  glyph_templates: Optional[list[dict]] = None,
+                  glyph_threshold: float = 0.7) -> list[dict]:
         """
         Run OCR on a frame and return detected text.
         Input should be a binary image (black #000000 and white #ffffff).
@@ -57,17 +58,18 @@ class OCREngine:
             if session_id and region_name:
                 save_debug_image(session_id, region_name, frame)
             
-            return self._read_glyphs(frame, glyph_templates or [])
+            return self._read_glyphs(frame, glyph_templates or [], glyph_threshold)
         except Exception as e:
             print(f"OCR error: {e}")
             return []
 
-    def _read_glyphs(self, frame: np.ndarray, templates: list[dict]) -> list[dict]:
+    def _read_glyphs(self, frame: np.ndarray, templates: list[dict],
+                     glyph_threshold: float) -> list[dict]:
         """Use glyph template matching for OCR."""
         if not templates:
             return []
         
-        results = recognize_with_glyphs(frame, templates)
+        results = recognize_with_glyphs(frame, templates, threshold=glyph_threshold)
         text = glyphs_to_text(results)
         
         if text and text != '?' * len(text):
@@ -111,7 +113,14 @@ class OCRWorker:
             frame = self.get_frame_fn()
             if frame is not None:
                 regions = self.get_regions_fn()
-                glyph_templates = self.get_glyphs_fn()
+                glyph_payload = self.get_glyphs_fn()
+                glyph_templates = []
+                glyph_threshold = 0.7
+                if isinstance(glyph_payload, dict):
+                    glyph_templates = glyph_payload.get("glyphs", [])
+                    glyph_threshold = glyph_payload.get("threshold", 0.7)
+                else:
+                    glyph_templates = glyph_payload or []
                 results_by_region = {}
                 
                 if regions:
@@ -134,7 +143,8 @@ class OCRWorker:
                                 backend=backend,
                                 session_id=self.session_id,
                                 region_name=label,
-                                glyph_templates=glyph_templates
+                                glyph_templates=glyph_templates,
+                                glyph_threshold=glyph_threshold
                             )
                             results_by_region[label] = region_results
                 else:
@@ -143,7 +153,8 @@ class OCRWorker:
                         backend="tesseract",
                         session_id=self.session_id,
                         region_name="_full",
-                        glyph_templates=glyph_templates
+                        glyph_templates=glyph_templates,
+                        glyph_threshold=glyph_threshold
                     )
                     results_by_region['_full'] = full_results
                 

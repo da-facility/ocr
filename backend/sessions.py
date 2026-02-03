@@ -6,6 +6,17 @@ import json
 import os
 
 
+DEFAULT_GLYPH_SIMILARITY_THRESHOLD = 0.7
+
+
+def clamp_glyph_similarity_threshold(value: float) -> float:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_GLYPH_SIMILARITY_THRESHOLD
+    return max(0.0, min(1.0, value))
+
+
 @dataclass
 class ColorFilter:
     """A color filter with BGR color and tolerance values."""
@@ -82,6 +93,7 @@ class Session:
     color_filters: list[ColorFilter] = field(default_factory=list)
     erosion_kernel: int = 0
     dilation_kernel: int = 0
+    glyph_similarity_threshold: float = DEFAULT_GLYPH_SIMILARITY_THRESHOLD
     ocr_regions: list[OcrRegion] = field(default_factory=list)
     glyphs: list[Glyph] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
@@ -99,6 +111,7 @@ class Session:
             "color_filters": [cf.to_dict() for cf in self.color_filters],
             "erosion_kernel": self.erosion_kernel,
             "dilation_kernel": self.dilation_kernel,
+            "glyph_similarity_threshold": self.glyph_similarity_threshold,
             "ocr_regions": [r.to_dict() for r in self.ocr_regions],
             "glyphs": [g.to_dict() for g in self.glyphs],
             "created_at": self.created_at.isoformat()
@@ -178,6 +191,9 @@ class SessionManager:
                     color_filters=color_filters,
                     erosion_kernel=sdata.get('erosion_kernel', 0),
                     dilation_kernel=sdata.get('dilation_kernel', 0),
+                    glyph_similarity_threshold=clamp_glyph_similarity_threshold(
+                        sdata.get('glyph_similarity_threshold', DEFAULT_GLYPH_SIMILARITY_THRESHOLD)
+                    ),
                     ocr_regions=ocr_regions,
                     glyphs=glyphs,
                     created_at=datetime.fromisoformat(sdata['created_at']) if 'created_at' in sdata else datetime.now()
@@ -283,6 +299,14 @@ class SessionManager:
             self.save_sessions()
             return True
         return False
+
+    def update_glyph_similarity_threshold(self, session_id: str, threshold: float) -> Optional[float]:
+        session = self.get_session(session_id)
+        if session:
+            session.glyph_similarity_threshold = clamp_glyph_similarity_threshold(threshold)
+            self.save_sessions()
+            return session.glyph_similarity_threshold
+        return None
 
     def add_ocr_region(self, session_id: str, x: int, y: int, width: int, height: int, 
                        label: str = "") -> Optional[OcrRegion]:

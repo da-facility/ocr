@@ -164,6 +164,12 @@ async function handleMorphologyChange(erosion, dilation) {
   }
 }
 
+function handleGlyphThresholdUpdated(threshold) {
+  if (session.value) {
+    session.value.glyph_similarity_threshold = threshold
+  }
+}
+
 async function handleAddOcrRegion(x, y, width, height) {
   try {
     const region = await addOcrRegion(sessionId.value, x, y, width, height)
@@ -430,6 +436,7 @@ watch(sessionId, () => {
           @delete-region="handleDeleteOcrRegion"
           @clear-regions="handleClearOcrRegions"
           @rename-region="handleRenameRegion"
+          @glyph-threshold-updated="handleGlyphThresholdUpdated"
           @glyphs-updated="loadSession"
           @region-updated="loadSession"
         />

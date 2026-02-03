@@ -1,9 +1,9 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { 
   detectGlyphs, addGlyph, updateGlyph, deleteGlyph, clearGlyphs, combineGlyphs,
   listGlyphSets, exportGlyphs, importGlyphs, deleteGlyphSet,
-  updateOcrRegion, resetRegionValidator
+  updateOcrRegion, resetRegionValidator, updateGlyphThreshold
 } from '../api'
 
 const props = defineProps({
@@ -14,7 +14,14 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['delete-region', 'clear-regions', 'rename-region', 'glyphs-updated', 'region-updated'])
+const emit = defineEmits([
+  'delete-region',
+  'clear-regions',
+  'rename-region',
+  'glyphs-updated',
+  'region-updated',
+  'glyph-threshold-updated'
+])
 
 const colors = ['#00d9ff', '#00ff9d', '#ff6b6b', '#ffb347', '#c084fc', '#f472b6']
 const editingId = ref(null)
@@ -28,6 +35,9 @@ const selectedRegionForGlyphs = ref(null)
 const mergeVertical = ref(true)  // Auto-merge vertical glyphs like ':'
 const selectedGlyphIndices = ref(new Set())  // For manual combining
 const combineLabel = ref('')  // Label for combined glyph
+const glyphThreshold = ref(0.7)
+const thresholdPercent = computed(() => Math.round(glyphThreshold.value * 100))
+let glyphThresholdTimer = null
 
 // Glyph storage state
 const glyphSets = ref([])
@@ -82,6 +92,29 @@ const allRegionNames = computed(() => {
   const all = new Set([...fromResults, ...fromRegions])
   return Array.from(all).filter(n => n !== '_full')
 })
+
+function clampThreshold(value) {
+  const parsed = Number(value)
+  if (Number.isNaN(parsed)) return 0.7
+  return Math.min(1, Math.max(0, parsed))
+}
+
+function scheduleGlyphThresholdUpdate() {
+  clearTimeout(glyphThresholdTimer)
+  glyphThresholdTimer = setTimeout(async () => {
+    if (!props.session) return
+    const normalized = clampThreshold(glyphThreshold.value)
+    glyphThreshold.value = normalized
+    try {
+      const result = await updateGlyphThreshold(props.session.id, normalized)
+      const updatedValue = result?.glyph_similarity_threshold ?? normalized
+      glyphThreshold.value = updatedValue
+      emit('glyph-threshold-updated', updatedValue)
+    } catch (e) {
+      console.error('Failed to update glyph threshold:', e)
+    }
+  }, 200)
+}
 
 // Glyph training functions
 async function handleDetectGlyphs() {
@@ -299,6 +332,14 @@ function getResultTime(regionName) {
   return result.time
 }
 
+watch(
+  () => props.session?.glyph_similarity_threshold,
+  (value) => {
+    glyphThreshold.value = typeof value === 'number' ? value : 0.7
+  },
+  { immediate: true }
+)
+
 onMounted(() => {
   loadGlyphSets()
 })
@@ -462,6 +503,35 @@ function templateToDataUrl(template) {
             </template>
           </div>
         </div>
+      </div>
+    </section>
+
+    <div class="border-t border-midnight-800" />
+
+    <section>
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-xs uppercase tracking-widest text-midnight-500">Glyph Matching</h3>
+        <span class="text-xs text-midnight-500 font-mono">{{ thresholdPercent }}%</span>
+      </div>
+
+      <p class="text-xs text-midnight-600 mb-3">
+        Set the minimum similarity needed to match a trained glyph.
+      </p>
+
+      <div class="space-y-2">
+        <div class="flex justify-between text-xs text-midnight-500">
+          <span>Loose</span>
+          <span>Strict</span>
+        </div>
+        <input
+          type="range"
+          v-model.number="glyphThreshold"
+          min="0"
+          max="1"
+          step="0.01"
+          @input="scheduleGlyphThresholdUpdate"
+          class="w-full accent-electric-500"
+        />
       </div>
     </section>
 
@@ -797,3 +867,13 @@ function templateToDataUrl(template) {
     </div>
   </div>
 </template>
+
+<style scoped>
+input[type="range"] {
+  @apply h-2 bg-midnight-800 rounded-lg appearance-none cursor-pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  @apply appearance-none w-4 h-4 rounded-full cursor-pointer bg-electric-400;
+}
+</style>
