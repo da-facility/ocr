@@ -153,6 +153,10 @@ class MorphologyRequest(BaseModel):
     dilation_kernel: Optional[int] = None
 
 
+class GlyphThresholdRequest(BaseModel):
+    threshold: float
+
+
 class PickColorRequest(BaseModel):
     x: int
     y: int
@@ -320,6 +324,20 @@ async def update_morphology(session_id: str, request: MorphologyRequest):
         session_id=session_id,
         erosion_kernel=request.erosion_kernel,
         dilation_kernel=request.dilation_kernel
+    )
+    if not response.success or response.data is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return response.data
+
+
+@app.put("/api/sessions/{session_id}/glyph-threshold")
+async def update_glyph_threshold(session_id: str, request: GlyphThresholdRequest):
+    """Update glyph matching similarity threshold."""
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.UPDATE_GLYPH_THRESHOLD,
+        session_id=session_id,
+        threshold=request.threshold
     )
     if not response.success or response.data is None:
         raise HTTPException(status_code=404, detail="Session not found")

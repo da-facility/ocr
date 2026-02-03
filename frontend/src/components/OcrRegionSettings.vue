@@ -1,9 +1,9 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { 
   detectGlyphs, addGlyph, updateGlyph, deleteGlyph, clearGlyphs, combineGlyphs,
   listGlyphSets, exportGlyphs, importGlyphs, deleteGlyphSet,
-  updateOcrRegion, resetRegionValidator
+  updateOcrRegion, resetRegionValidator, updateGlyphThreshold
 } from '../api'
 
 const props = defineProps({
@@ -14,7 +14,14 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['delete-region', 'clear-regions', 'rename-region', 'glyphs-updated', 'region-updated'])
+const emit = defineEmits([
+  'delete-region',
+  'clear-regions',
+  'rename-region',
+  'glyphs-updated',
+  'region-updated',
+  'glyph-threshold-updated'
+])
 
 const colors = ['#00d9ff', '#00ff9d', '#ff6b6b', '#ffb347', '#c084fc', '#f472b6']
 const editingId = ref(null)
@@ -28,6 +35,9 @@ const selectedRegionForGlyphs = ref(null)
 const mergeVertical = ref(true)  // Auto-merge vertical glyphs like ':'
 const selectedGlyphIndices = ref(new Set())  // For manual combining
 const combineLabel = ref('')  // Label for combined glyph
+const glyphThreshold = ref(0.7)
+const thresholdPercent = computed(() => Math.round(glyphThreshold.value * 100))
+let glyphThresholdTimer = null
 
 // Glyph storage state
 const glyphSets = ref([])
@@ -83,6 +93,29 @@ const allRegionNames = computed(() => {
   return Array.from(all).filter(n => n !== '_full')
 })
 
+function clampThreshold(value) {
+  const parsed = Number(value)
+  if (Number.isNaN(parsed)) return 0.7
+  return Math.min(1, Math.max(0, parsed))
+}
+
+function scheduleGlyphThresholdUpdate() {
+  clearTimeout(glyphThresholdTimer)
+  glyphThresholdTimer = setTimeout(async () => {
+    if (!props.session) return
+    const normalized = clampThreshold(glyphThreshold.value)
+    glyphThreshold.value = normalized
+    try {
+      const result = await updateGlyphThreshold(props.session.id, normalized)
+      const updatedValue = result?.glyph_similarity_threshold ?? normalized
+      glyphThreshold.value = updatedValue
+      emit('glyph-threshold-updated', updatedValue)
+    } catch (e) {
+      console.error('Failed to update glyph threshold:', e)
+    }
+  }, 200)
+}
+
 // Glyph training functions
 async function handleDetectGlyphs() {
   if (!props.session) return
@@ -118,6 +151,11 @@ function isGlyphSelected(index) {
 }
 
 const selectedCount = computed(() => selectedGlyphIndices.value.size)
+const selectedGlyphs = computed(() => detectedGlyphs.value.filter(g => selectedGlyphIndices.value.has(g.index)))
+const selectedMissingLabels = computed(() => selectedGlyphs.value.filter(
+  glyph => !glyphLabels.value[glyph.index]?.trim()
+))
+const canSaveSelected = computed(() => selectedGlyphs.value.length > 0 && selectedMissingLabels.value.length === 0)
 
 async function handleCombineSelected() {
   if (!props.session || selectedGlyphIndices.value.size < 2 || !combineLabel.value) return
@@ -132,6 +170,9 @@ async function handleCombineSelected() {
     
     // Remove combined glyphs from detected list
     detectedGlyphs.value = detectedGlyphs.value.filter(g => !selectedGlyphIndices.value.has(g.index))
+    for (const index of indices) {
+      delete glyphLabels.value[index]
+    }
     selectedGlyphIndices.value = new Set()
     combineLabel.value = ''
   } catch (e) {
@@ -144,6 +185,29 @@ function clearSelection() {
   combineLabel.value = ''
 }
 
+async function handleSaveSelectedGlyphs() {
+  if (!props.session || selectedGlyphIndices.value.size === 0) return
+  if (!canSaveSelected.value) return
+
+  const selected = selectedGlyphs.value
+  try {
+    for (const glyph of selected) {
+      const char = glyphLabels.value[glyph.index].trim()
+      await addGlyph(props.session.id, char, glyph.template, glyph.width, glyph.height)
+    }
+    emit('glyphs-updated')
+    const selectedIndices = new Set(selectedGlyphIndices.value)
+    detectedGlyphs.value = detectedGlyphs.value.filter(g => !selectedIndices.has(g.index))
+    for (const index of selectedIndices) {
+      delete glyphLabels.value[index]
+    }
+    selectedGlyphIndices.value = new Set()
+    combineLabel.value = ''
+  } catch (e) {
+    console.error('Failed to save selected glyphs:', e)
+  }
+}
+
 async function handleSaveGlyph(glyph, ignored = false) {
   const char = glyphLabels.value[glyph.index]
   if (!char || !props.session) return
@@ -153,6 +217,11 @@ async function handleSaveGlyph(glyph, ignored = false) {
     emit('glyphs-updated')
     // Remove from detected list
     detectedGlyphs.value = detectedGlyphs.value.filter(g => g.index !== glyph.index)
+    if (selectedGlyphIndices.value.has(glyph.index)) {
+      selectedGlyphIndices.value.delete(glyph.index)
+      selectedGlyphIndices.value = new Set(selectedGlyphIndices.value)
+    }
+    delete glyphLabels.value[glyph.index]
   } catch (e) {
     console.error('Failed to save glyph:', e)
   }
@@ -167,6 +236,11 @@ async function handleIgnoreGlyph(glyph) {
     emit('glyphs-updated')
     // Remove from detected list
     detectedGlyphs.value = detectedGlyphs.value.filter(g => g.index !== glyph.index)
+    if (selectedGlyphIndices.value.has(glyph.index)) {
+      selectedGlyphIndices.value.delete(glyph.index)
+      selectedGlyphIndices.value = new Set(selectedGlyphIndices.value)
+    }
+    delete glyphLabels.value[glyph.index]
   } catch (e) {
     console.error('Failed to ignore glyph:', e)
   }
@@ -298,6 +372,14 @@ function getResultTime(regionName) {
   if (!result || !result.time) return null
   return result.time
 }
+
+watch(
+  () => props.session?.glyph_similarity_threshold,
+  (value) => {
+    glyphThreshold.value = typeof value === 'number' ? value : 0.7
+  },
+  { immediate: true }
+)
 
 onMounted(() => {
   loadGlyphSets()
@@ -467,6 +549,35 @@ function templateToDataUrl(template) {
 
     <div class="border-t border-midnight-800" />
 
+    <section>
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-xs uppercase tracking-widest text-midnight-500">Glyph Matching</h3>
+        <span class="text-xs text-midnight-500 font-mono">{{ thresholdPercent }}%</span>
+      </div>
+
+      <p class="text-xs text-midnight-600 mb-3">
+        Set the minimum similarity needed to match a trained glyph.
+      </p>
+
+      <div class="space-y-2">
+        <div class="flex justify-between text-xs text-midnight-500">
+          <span>Loose</span>
+          <span>Strict</span>
+        </div>
+        <input
+          type="range"
+          v-model.number="glyphThreshold"
+          min="0"
+          max="1"
+          step="0.01"
+          @input="scheduleGlyphThresholdUpdate"
+          class="w-full accent-electric-500"
+        />
+      </div>
+    </section>
+
+    <div class="border-t border-midnight-800" />
+
     <!-- Glyph Training Section -->
     <section>
       <div class="flex items-center justify-between mb-4">
@@ -538,35 +649,51 @@ function templateToDataUrl(template) {
           </div>
         </div>
 
-        <!-- Combine UI when multiple selected -->
-        <div v-if="selectedCount >= 2" class="bg-electric-500/10 border border-electric-500/30 rounded-lg p-3 mb-3">
-          <div class="text-xs text-electric-400 mb-2">Combine {{ selectedCount }} glyphs into one:</div>
-          <div class="flex gap-2">
-            <input
-              v-model="combineLabel"
-              maxlength="3"
-              placeholder="Label (e.g. :)"
-              class="flex-1 bg-midnight-900 border border-midnight-700 rounded px-2 py-1.5 text-xs text-midnight-200 focus:outline-none focus:border-electric-500"
-              @keyup.enter="handleCombineSelected"
-            />
-            <button
-              @click="handleCombineSelected"
-              :disabled="!combineLabel"
-              class="px-3 py-1.5 bg-electric-500 hover:bg-electric-400 disabled:bg-midnight-700 text-midnight-950 disabled:text-midnight-500 text-xs font-medium rounded transition-colors"
-            >
-              Combine
-            </button>
-            <button
-              @click="clearSelection"
-              class="px-2 py-1.5 bg-midnight-700 hover:bg-midnight-600 text-midnight-300 text-xs rounded transition-colors"
-            >
-              Cancel
-            </button>
+        <!-- Selected glyph actions -->
+        <div v-if="selectedCount > 0" class="bg-electric-500/10 border border-electric-500/30 rounded-lg p-3 mb-3">
+          <div class="flex items-center justify-between gap-2 mb-2">
+            <div class="text-xs text-electric-400">Selected Glyphs ({{ selectedCount }})</div>
+            <div class="flex items-center gap-2">
+              <button
+                @click="handleSaveSelectedGlyphs"
+                :disabled="!canSaveSelected"
+                :title="canSaveSelected ? 'Save selected glyphs' : 'Add labels to all selected glyphs'"
+                class="px-3 py-1.5 bg-electric-500 hover:bg-electric-400 disabled:bg-midnight-700 text-midnight-950 disabled:text-midnight-500 text-xs font-medium rounded transition-colors"
+              >
+                Save {{ selectedCount }}
+              </button>
+              <button
+                @click="clearSelection"
+                class="px-2 py-1.5 bg-midnight-700 hover:bg-midnight-600 text-midnight-300 text-xs rounded transition-colors"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+
+          <div v-if="selectedCount >= 2" class="mt-3">
+            <div class="text-xs text-electric-400 mb-2">Combine selected glyphs into one:</div>
+            <div class="flex gap-2">
+              <input
+                v-model="combineLabel"
+                maxlength="3"
+                placeholder="Label (e.g. :)"
+                class="flex-1 bg-midnight-900 border border-midnight-700 rounded px-2 py-1.5 text-xs text-midnight-200 focus:outline-none focus:border-electric-500"
+                @keyup.enter="handleCombineSelected"
+              />
+              <button
+                @click="handleCombineSelected"
+                :disabled="!combineLabel"
+                class="px-3 py-1.5 bg-electric-500 hover:bg-electric-400 disabled:bg-midnight-700 text-midnight-950 disabled:text-midnight-500 text-xs font-medium rounded transition-colors"
+              >
+                Combine
+              </button>
+            </div>
           </div>
         </div>
 
         <p class="text-xs text-midnight-600 mb-2">
-          Click to select multiple glyphs to combine (e.g. for ":")
+          Click to select glyphs to save or combine (e.g. for ":")
         </p>
 
         <div class="grid grid-cols-4 gap-2">
@@ -596,13 +723,6 @@ function templateToDataUrl(template) {
               @keyup.enter="handleSaveGlyph(glyph)"
             />
             <div class="flex gap-1 mt-1">
-              <button
-                @click.stop="handleSaveGlyph(glyph)"
-                :disabled="!glyphLabels[glyph.index]"
-                class="flex-1 px-2 py-0.5 bg-electric-500/20 hover:bg-electric-500/30 disabled:bg-midnight-700/50 text-electric-400 disabled:text-midnight-600 text-xs rounded"
-              >
-                Save
-              </button>
               <button
                 @click.stop="handleIgnoreGlyph(glyph)"
                 class="px-2 py-0.5 bg-midnight-700 hover:bg-midnight-600 text-midnight-400 text-xs rounded"
@@ -797,3 +917,13 @@ function templateToDataUrl(template) {
     </div>
   </div>
 </template>
+
+<style scoped>
+input[type="range"] {
+  @apply h-2 bg-midnight-800 rounded-lg appearance-none cursor-pointer;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  @apply appearance-none w-4 h-4 rounded-full cursor-pointer bg-electric-400;
+}
+</style>

@@ -97,6 +97,15 @@ export async function updateMorphology(sessionId, erosionKernel, dilationKernel)
   return res.json()
 }
 
+export async function updateGlyphThreshold(sessionId, threshold) {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/glyph-threshold`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ threshold })
+  })
+  return res.json()
+}
+
 export async function pickColor(sessionId, x, y) {
   const res = await fetch(`${API_BASE}/sessions/${sessionId}/pick-color`, {
     method: 'POST',

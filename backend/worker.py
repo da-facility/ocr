@@ -107,8 +107,11 @@ def start_session_ocr(state: WorkerState, session):
     def get_glyphs():
         sess = state.session_manager.get_session(session.id)
         if sess is None:
-            return []
-        return [g.to_dict() for g in sess.glyphs]
+            return {"glyphs": [], "threshold": 0.7}
+        return {
+            "glyphs": [g.to_dict() for g in sess.glyphs],
+            "threshold": getattr(sess, "glyph_similarity_threshold", 0.7)
+        }
     
     state.ocr_manager.start_ocr(session.id, get_processed_frame, get_regions, get_glyphs)
 
@@ -231,6 +234,15 @@ def register_handlers(server: IPCServer, state: WorkerState):
             "status": "updated",
             "erosion_kernel": updated.erosion_kernel,
             "dilation_kernel": updated.dilation_kernel
+        }
+
+    def handle_update_glyph_threshold(session_id: str, threshold: float):
+        updated_threshold = state.session_manager.update_glyph_similarity_threshold(session_id, threshold)
+        if updated_threshold is None:
+            return None
+        return {
+            "status": "updated",
+            "glyph_similarity_threshold": updated_threshold
         }
     
     def handle_pick_color(session_id: str, x: int, y: int):
@@ -538,6 +550,7 @@ def register_handlers(server: IPCServer, state: WorkerState):
     server.register_handler(Command.DELETE_COLOR_FILTER, handle_delete_color_filter)
     server.register_handler(Command.CLEAR_COLOR_FILTERS, handle_clear_color_filters)
     server.register_handler(Command.UPDATE_MORPHOLOGY, handle_update_morphology)
+    server.register_handler(Command.UPDATE_GLYPH_THRESHOLD, handle_update_glyph_threshold)
     server.register_handler(Command.PICK_COLOR, handle_pick_color)
     
     server.register_handler(Command.ADD_OCR_REGION, handle_add_ocr_region)
