@@ -10,22 +10,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup mise
-        run: mise install
-
       - name: Build
         shell: powershell
         run: |
+          mise install
           Push-Location backend
-          uv sync
-          uv pip install pyinstaller
+          mise exec -- uv sync
+          mise exec -- uv pip install pyinstaller
           Pop-Location
           Push-Location frontend
-          bun install
-          bun run build
+          mise exec -- bun install
+          mise exec -- bun run build
           Pop-Location
           Push-Location backend
-          uv run pyinstaller ocr-camera.spec --noconfirm --distpath ../dist
+          mise exec -- uv run pyinstaller ocr-camera.spec --noconfirm --distpath ../dist
           Pop-Location
 
       - uses: actions/upload-artifact@v4
