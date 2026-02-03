@@ -40,8 +40,7 @@ yarn-error.log*
 lerna-debug.log*
 .pnpm-debug.log*
 
-# Frontend build
-frontend/dist/
+# Frontend build cache
 frontend/.vite/
 frontend/.vite-cache/
 
@@ -72,8 +71,9 @@ backend/*.log
 *.log
 
 # Build artifacts
-backend/dist/
+dist/
 backend/build/
+frontend/dist/
 *.exe
 *.app
 *.dmg
