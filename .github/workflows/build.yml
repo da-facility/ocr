@@ -1,25 +1,17 @@
 name: Build
 
 on:
-  workflow_dispatch:
+  push:
 
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - os: windows-latest
-            artifact: OCR-Camera.exe
-          - os: ubuntu-latest
-            artifact: OCR-Camera
-          - os: macos-latest
-            artifact: OCR-Camera
-    runs-on: ${{ matrix.os }}
+    runs-on: self-hosted
 
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v4
-      - uses: oven-sh/setup-bun@v2
+
+      - name: Setup mise
+        run: mise install
 
       - name: Build
         shell: bash
@@ -30,5 +22,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: OCR-Camera-${{ runner.os }}
-          path: dist/${{ matrix.artifact }}
+          name: OCR-Camera-Windows
+          path: dist/OCR-Camera.exe
