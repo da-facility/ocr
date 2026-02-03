@@ -11,14 +11,22 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Setup mise
-        uses: jdx/mise-action@v2
+        run: mise install
 
       - name: Build
-        shell: bash
+        shell: pwsh
         run: |
-          cd backend && uv sync && uv pip install pyinstaller
-          cd ../frontend && bun install && bun run build
-          cd ../backend && uv run pyinstaller ocr-camera.spec --noconfirm --distpath ../dist
+          Push-Location backend
+          uv sync
+          uv pip install pyinstaller
+          Pop-Location
+          Push-Location frontend
+          bun install
+          bun run build
+          Pop-Location
+          Push-Location backend
+          uv run pyinstaller ocr-camera.spec --noconfirm --distpath ../dist
+          Pop-Location
 
       - uses: actions/upload-artifact@v4
         with:
