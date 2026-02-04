@@ -13,13 +13,17 @@ class ScoreValidator:
     - Strips all non-numeric characters from input
     - In singles mode, only accepts values that differ by at most 1 from the last value
     - Provides a reset method to clear the last value state
+    - Returns structured result with is_stable flag indicating if value is fresh or cached
+    
+    Stateful: tracks the last stable value and returns it when "?" is detected
+    in the input (indicating OCR uncertainty) or when a large jump occurs in singles mode.
     """
     
     def __init__(self, singles_mode: bool = False):
         self.singles_mode = singles_mode
         self.last_value: Optional[int] = None
     
-    def validate(self, text: str) -> Optional[str]:
+    def validate(self, text: str) -> dict:
         """
         Validate and clean a score value.
         
@@ -27,27 +31,71 @@ class ScoreValidator:
             text: Raw OCR text
             
         Returns:
-            Cleaned numeric string, or None if invalid.
-            In singles mode, returns last valid value if the change is too large.
+            Dictionary with parsed score info:
+            {
+                "value": int or None,  # The numeric value
+                "formatted": str,  # Formatted string representation
+                "is_stable": bool,  # True if fresh reading, False if cached due to stability rules or "?"
+                "raw": str  # Original input text
+            }
         """
         if not text:
-            return None
+            return self._empty_result(is_stable=True)
+        
+        # Check for "?" indicating OCR uncertainty - return last stable result
+        if '?' in text:
+            if self.last_value is not None:
+                return {
+                    "value": self.last_value,
+                    "formatted": str(self.last_value),
+                    "is_stable": False,
+                    "raw": text
+                }
+            return self._empty_result(is_stable=False)
         
         # Strip non-numeric characters
         digits = ''.join(c for c in text if c.isdigit())
         if not digits:
-            return None
+            # No digits found - return last value if available
+            if self.last_value is not None:
+                return {
+                    "value": self.last_value,
+                    "formatted": str(self.last_value),
+                    "is_stable": False,
+                    "raw": text
+                }
+            return self._empty_result(is_stable=True)
         
         value = int(digits)
         
         if self.singles_mode and self.last_value is not None:
             diff = abs(value - self.last_value)
             if diff > 1:
-                # Reject large jumps, return last valid value
-                return str(self.last_value)
+                # Reject large jumps, return last valid value with is_stable=False
+                return {
+                    "value": self.last_value,
+                    "formatted": str(self.last_value),
+                    "is_stable": False,
+                    "raw": text
+                }
         
+        # Fresh valid reading
         self.last_value = value
-        return str(value)
+        return {
+            "value": value,
+            "formatted": str(value),
+            "is_stable": True,
+            "raw": text
+        }
+    
+    def _empty_result(self, is_stable: bool = True) -> dict:
+        """Return an empty result when no valid score is available."""
+        return {
+            "value": None,
+            "formatted": "",
+            "is_stable": is_stable,
+            "raw": ""
+        }
     
     def reset(self):
         """Reset the validator state, allowing any value to be accepted."""

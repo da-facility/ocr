@@ -497,9 +497,10 @@ def register_handlers(server: IPCServer, state: WorkerState):
             if region_type == "score" and region_id:
                 validator = state.get_or_create_validator(session_id, region_id, region_type, score_subtype)
                 if validator:
-                    validated_result = validator.validate(raw_text)
-                    validated_text = validated_result if validated_result else raw_text
-                    extra_data["score_value"] = int(validated_text) if validated_text.isdigit() else None
+                    score_result = validator.validate(raw_text)
+                    validated_text = score_result["formatted"]
+                    extra_data["score"] = score_result
+                    extra_data["score_value"] = score_result["value"]
                     extra_data["singles_mode"] = validator.singles_mode
             elif region_type == "time" and region_id:
                 time_format = region.time_format if region else "m:ss"
