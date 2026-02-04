@@ -1,6 +1,7 @@
 import threading
 import time
 import os
+import sys
 from typing import Optional, Callable
 import numpy as np
 import cv2
@@ -10,17 +11,26 @@ from glyphs import recognize_with_glyphs, glyphs_to_text
 
 DEBUG_DIR = "./debug"
 
+# Skip debug image saving when running as frozen executable (release mode)
+IS_FROZEN = getattr(sys, 'frozen', False)
+
 
 def ensure_debug_dir(session_id: str):
     """Create debug directory for a session if it doesn't exist."""
+    if IS_FROZEN:
+        return None
     path = os.path.join(DEBUG_DIR, session_id)
     os.makedirs(path, exist_ok=True)
     return path
 
 
 def save_debug_image(session_id: str, region_name: str, image: np.ndarray):
-    """Save a debug image for a region."""
+    """Save a debug image for a region. Skipped in release mode."""
+    if IS_FROZEN:
+        return
     path = ensure_debug_dir(session_id)
+    if path is None:
+        return
     safe_name = region_name.replace("/", "_").replace(" ", "_")
     filepath = os.path.join(path, f"{safe_name}.png")
     cv2.imwrite(filepath, image)
