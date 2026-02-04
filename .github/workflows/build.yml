@@ -1,25 +1,10 @@
 name: Build
 
 on:
-  push:
   release:
     types: [published]
 
 jobs:
-  lint:
-    runs-on: self-hosted
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup mise
-        uses: jdx/mise-action@v2
-
-      - name: Lint
-        shell: bash
-        run: |
-          cd frontend && bun install && bun lint
-
   build:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: self-hosted
