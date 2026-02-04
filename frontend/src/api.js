@@ -150,20 +150,24 @@ export function getStreamUrl(sessionId, type) {
 }
 
 export function createOcrWebSocket(sessionId, onMessage) {
+  // In dev mode, Vite proxy doesn't forward WebSocket properly
+  // Connect directly to backend
+  const isDev = import.meta.env.DEV
+  const wsHost = isDev ? 'localhost:8000' : window.location.host
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const ws = new WebSocket(`${protocol}//${window.location.host}/ws/${sessionId}/ocr`)
-  
+  const ws = new WebSocket(`${protocol}//${wsHost}/ws/${sessionId}/ocr`)
+
   ws.onmessage = (event) => {
     const data = JSON.parse(event.data)
     if (data.results) {
       onMessage(data.results)
     }
   }
-  
+
   ws.onerror = (err) => {
     console.error('WebSocket error:', err)
   }
-  
+
   return ws
 }
 
