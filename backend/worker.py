@@ -117,14 +117,17 @@ def register_handlers(server: IPCServer, state: WorkerState):
     """Register all command handlers."""
     
     # ============= Camera handlers =============
-    
-    def handle_list_cameras():
-        return state.camera_manager.list_available_cameras()
-    
+
+    def handle_list_cameras(force_refresh: bool = False):
+        return state.camera_manager.list_available_cameras(force_refresh=force_refresh)
+
+    def handle_refresh_cameras():
+        return state.camera_manager.refresh_cameras()
+
     def handle_acquire_camera(camera_index: int):
         camera = state.camera_manager.acquire_camera(camera_index)
         return camera is not None
-    
+
     def handle_release_camera(camera_index: int):
         state.camera_manager.release_camera(camera_index)
         return True
@@ -524,6 +527,7 @@ def register_handlers(server: IPCServer, state: WorkerState):
     
     # Register all handlers
     server.register_handler(Command.LIST_CAMERAS, handle_list_cameras)
+    server.register_handler(Command.REFRESH_CAMERAS, handle_refresh_cameras)
     server.register_handler(Command.ACQUIRE_CAMERA, handle_acquire_camera)
     server.register_handler(Command.RELEASE_CAMERA, handle_release_camera)
     server.register_handler(Command.GET_FRAME, handle_get_frame)
@@ -576,15 +580,29 @@ def worker_main(conn: Connection):
     # Initialize state
     state = WorkerState()
     
-    # Restore sessions and start their OCR
+    # Restore sessions and start their OCR using stable camera identification
     print("[Worker] Restoring sessions...")
+    # Force refresh camera list to get current indices
+    state.camera_manager.refresh_cameras()
+
     for session in state.session_manager.list_sessions():
-        camera = state.camera_manager.acquire_camera(session.camera_index)
+        # Use VID/PID/name to resolve to current camera index
+        camera, resolved_index = state.camera_manager.acquire_camera_by_id(
+            session.camera_vid,
+            session.camera_pid,
+            session.camera_device_name or session.camera_name,
+            session.camera_index
+        )
         if camera:
+            # Update session with resolved index if it changed
+            if resolved_index != session.camera_index:
+                session.camera_index = resolved_index
+                state.session_manager.save_sessions()
+                print(f"[Worker] Camera index changed: {session.camera_index} -> {resolved_index}")
             start_session_ocr(state, session)
-            print(f"[Worker] Restored session {session.id} with camera {session.camera_index}")
+            print(f"[Worker] Restored session {session.id} with camera {resolved_index}")
         else:
-            print(f"[Worker] Failed to restore session {session.id}: camera {session.camera_index} not available")
+            print(f"[Worker] Failed to restore session {session.id}: camera not available (VID:{session.camera_vid}, PID:{session.camera_pid})")
     
     # Create and configure IPC server
     server = IPCServer(conn)

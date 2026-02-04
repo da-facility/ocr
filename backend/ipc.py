@@ -17,6 +17,7 @@ class Command(Enum):
     """Commands that can be sent to the worker."""
     # Camera commands
     LIST_CAMERAS = "list_cameras"
+    REFRESH_CAMERAS = "refresh_cameras"
     ACQUIRE_CAMERA = "acquire_camera"
     RELEASE_CAMERA = "release_camera"
     GET_FRAME = "get_frame"

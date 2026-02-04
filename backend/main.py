@@ -178,12 +178,22 @@ class OcrRegionUpdateRequest(BaseModel):
 
 
 @app.get("/api/cameras")
-async def list_cameras():
-    """List available camera devices."""
+async def list_cameras(refresh: bool = False):
+    """List available camera devices. Uses cache for instant response unless refresh=true."""
     client = get_ipc_client()
-    response = client.send_command(Command.LIST_CAMERAS, timeout=5.0)
+    response = client.send_command(Command.LIST_CAMERAS, force_refresh=refresh, timeout=5.0)
     if not response.success:
         raise HTTPException(status_code=500, detail=response.error or "Failed to list cameras")
+    return {"cameras": response.data}
+
+
+@app.post("/api/cameras/refresh")
+async def refresh_cameras():
+    """Force refresh the camera list and return updated data."""
+    client = get_ipc_client()
+    response = client.send_command(Command.REFRESH_CAMERAS, timeout=5.0)
+    if not response.success:
+        raise HTTPException(status_code=500, detail=response.error or "Failed to refresh cameras")
     return {"cameras": response.data}
 
 
