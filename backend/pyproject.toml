@@ -8,14 +8,9 @@ dependencies = [
     "uvicorn[standard]>=0.24.0",
     "opencv-python>=4.8.0",
     "cv2-enumerate-cameras",
-    "easyocr>=1.7.0",
     "numpy>=1.24.0",
     "python-multipart>=0.0.6",
-    "pytesseract>=0.3.10",
 ]
-
-[project.optional-dependencies]
-dev = ["pyinstaller>=6.0.0"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -25,7 +20,7 @@ build-backend = "setuptools.build_meta"
 py-modules = ["main", "sessions", "camera", "processing", "ocr", "glyphs"]
 
 [dependency-groups]
-dev = ["ruff>=0.4.0"]
+dev = ["pyinstaller>=6.0.0", "ruff>=0.4.0"]
 
 [tool.ruff]
 line-length = 120

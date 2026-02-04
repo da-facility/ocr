@@ -3,16 +3,22 @@
 PyInstaller spec file for OCR Camera App.
 
 Build with:
-    pyinstaller ocr-camera.spec
+    uv run pyinstaller ocr-camera.spec --noconfirm --distpath ../dist
+
+Environment variables:
+    RELEASE_BUILD=1  - Enable UPX compression (smaller but slower build)
 
 Prerequisites:
-    1. Build frontend first: cd ../frontend && npm run build
-    2. Install PyInstaller: pip install pyinstaller
-    3. Make sure all dependencies are installed
+    1. Build frontend first: cd ../frontend && bun run build
+    2. Backend deps installed: uv sync
 """
 
+import os
 import sys
 from pathlib import Path
+
+# Build mode: release enables UPX compression
+is_release = os.environ.get('RELEASE_BUILD', '0') == '1'
 
 # Paths
 backend_dir = Path(SPECPATH)
@@ -20,7 +26,7 @@ frontend_dist = backend_dir.parent / 'frontend' / 'dist'
 
 # Check if frontend is built
 if not frontend_dist.exists():
-    print("ERROR: Frontend not built! Run 'npm run build' in frontend/ first.")
+    print("ERROR: Frontend not built! Run 'bun run build' in frontend/ first.")
     sys.exit(1)
 
 # Hidden imports for uvicorn and fastapi
@@ -44,12 +50,6 @@ hidden_imports = [
     'pydantic',
     'cv2',
     'numpy',
-    'PIL',
-    'pytesseract',
-    # EasyOCR imports (large, can be removed if not using)
-    'easyocr',
-    'torch',
-    'torchvision',
     # Multiprocessing support for worker process
     'multiprocessing',
     'multiprocessing.connection',
@@ -101,6 +101,12 @@ a = Analysis(
         'tkinter',
         'matplotlib',
         'scipy',
+        # Heavy OCR deps we don't use (glyph engine only)
+        'easyocr',
+        'torch',
+        'torchvision',
+        'pytesseract',
+        'PIL',
     ],
     noarchive=False,
 )
@@ -117,7 +123,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=is_release,  # UPX only for release builds (faster debug builds)
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,  # Set to False for no console window (but you lose CLI args visibility)
