@@ -1,15 +1,13 @@
 """
 Global glyph storage for managing reusable glyph sets across sessions.
 """
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional
-import uuid
 import json
 import os
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
 
-from sessions import Glyph, session_manager, get_data_path
-
+from sessions import Glyph, get_data_path, session_manager
 
 GLYPHS_FILE = os.path.join(get_data_path(), "glyph_sets.json")
 
@@ -56,7 +54,7 @@ class GlyphStorageManager:
         print(f"[GlyphSets] Loading from: {GLYPHS_FILE}")
         
         try:
-            with open(GLYPHS_FILE, 'r') as f:
+            with open(GLYPHS_FILE) as f:
                 data = json.load(f)
             
             for set_id, sdata in data.items():
@@ -96,7 +94,7 @@ class GlyphStorageManager:
             })
         return result
     
-    def get_glyph_set(self, set_id: str) -> Optional[GlyphSet]:
+    def get_glyph_set(self, set_id: str) -> GlyphSet | None:
         """Get a specific glyph set by ID."""
         return self.glyph_sets.get(set_id)
     
@@ -134,7 +132,7 @@ class GlyphStorageManager:
             return True
         return False
     
-    def export_from_session(self, session_id: str, name: str) -> Optional[GlyphSet]:
+    def export_from_session(self, session_id: str, name: str) -> GlyphSet | None:
         """Export glyphs from a session to a new glyph set."""
         session = session_manager.get_session(session_id)
         if session is None or not session.glyphs:

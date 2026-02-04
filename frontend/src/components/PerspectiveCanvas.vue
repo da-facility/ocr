@@ -178,10 +178,13 @@ onMounted(() => {
     <svg class="w-full h-full pointer-events-none">
       <defs>
         <filter id="glow">
-          <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+          <feGaussianBlur
+            stdDeviation="3"
+            result="coloredBlur"
+          />
           <feMerge>
-            <feMergeNode in="coloredBlur"/>
-            <feMergeNode in="SourceGraphic"/>
+            <feMergeNode in="coloredBlur" />
+            <feMergeNode in="SourceGraphic" />
           </feMerge>
         </filter>
       </defs>
@@ -198,7 +201,10 @@ onMounted(() => {
         stroke-dasharray="8 4"
       />
 
-      <template v-for="(point, i) in localPoints" :key="'line-' + i">
+      <template
+        v-for="(point, i) in localPoints"
+        :key="'line-' + i"
+      >
         <line
           v-if="(i < localPoints.length - 1 || localPoints.length === 4) && imgRect"
           :x1="toDisplayCoords(point[0], point[1]).x"

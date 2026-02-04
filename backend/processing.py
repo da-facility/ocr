@@ -1,6 +1,6 @@
+
 import cv2
 import numpy as np
-from typing import Optional
 
 
 def apply_perspective_transform(frame: np.ndarray, 
@@ -83,7 +83,7 @@ def get_color_at_point(frame: np.ndarray, x: int, y: int) -> list[int]:
 
 
 def process_frame_perspective(frame: np.ndarray,
-                              perspective_points: Optional[list[tuple[int, int]]] = None,
+                              perspective_points: list[tuple[int, int]] | None = None,
                               output_size: tuple[int, int] = (800, 600)) -> np.ndarray:
     """Apply only perspective correction."""
     if perspective_points and len(perspective_points) == 4:
@@ -92,9 +92,9 @@ def process_frame_perspective(frame: np.ndarray,
 
 
 def process_frame_full(frame: np.ndarray,
-                       perspective_points: Optional[list[tuple[int, int]]] = None,
+                       perspective_points: list[tuple[int, int]] | None = None,
                        output_size: tuple[int, int] = (800, 600),
-                       color_filters: Optional[list[dict]] = None,
+                       color_filters: list[dict] | None = None,
                        erosion_kernel: int = 1,
                        dilation_kernel: int = 1) -> np.ndarray:
     """

@@ -2,9 +2,9 @@
 Glyph-based OCR using template matching.
 Detects connected components (glyphs) and matches them against stored templates.
 """
+
 import cv2
 import numpy as np
-from typing import Optional
 
 # Normalized glyph size for template matching
 GLYPH_SIZE = (32, 48)  # width, height
@@ -57,8 +57,6 @@ def merge_vertical_glyphs(glyphs: list[dict], binary_image: np.ndarray,
                 continue
             
             # Check if they're vertically close (not too far apart)
-            g1_bottom = g1['y'] + g1['height']
-            g2_top = g2['y']
             avg_height = (g1['height'] + g2['height']) / 2
             
             # Check gap between bottom of upper and top of lower
@@ -197,7 +195,7 @@ def template_to_image(template: list[list[int]]) -> np.ndarray:
 
 
 def match_glyph(glyph_image: np.ndarray, templates: list[dict], 
-                threshold: float = 0.7) -> Optional[tuple[str, float]]:
+                threshold: float = 0.7) -> tuple[str, float] | None:
     """
     Match a glyph image against stored templates.
     
@@ -322,7 +320,7 @@ def get_detected_glyphs_for_training(binary_image: np.ndarray,
 
 
 def combine_glyphs_by_indices(binary_image: np.ndarray, indices: list[int],
-                               min_area: int = 50) -> Optional[dict]:
+                               min_area: int = 50) -> dict | None:
     """
     Manually combine specific detected glyphs by their indices.
     Used when the user selects multiple glyphs to combine in the training UI.

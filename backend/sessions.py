@@ -1,10 +1,9 @@
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Optional
-import uuid
 import json
 import os
 import sys
+import uuid
+from dataclasses import dataclass, field
+from datetime import datetime
 
 
 def get_data_path() -> str:
@@ -63,7 +62,7 @@ class OcrRegion:
     label: str = ""
     ocr_backend: str = "glyphs"  # Only "glyphs" supported
     region_type: str = "generic"  # "generic", "time", or "score"
-    score_subtype: Optional[str] = None  # For score type: None or "singles"
+    score_subtype: str | None = None  # For score type: None or "singles"
     time_format: str = "m:ss"  # For time type: "m:ss" or "mm:ss"
 
     def to_dict(self) -> dict:
@@ -87,9 +86,9 @@ class Session:
     camera_index: int
     camera_name: str = ""
     camera_device_name: str = ""
-    camera_vid: Optional[int] = None
-    camera_pid: Optional[int] = None
-    perspective_points: Optional[list[tuple[int, int]]] = None
+    camera_vid: int | None = None
+    camera_pid: int | None = None
+    perspective_points: list[tuple[int, int]] | None = None
     perspective_output_size: tuple[int, int] = (800, 600)
     color_filters: list[ColorFilter] = field(default_factory=list)
     erosion_kernel: int = 0
@@ -116,13 +115,13 @@ class Session:
             "created_at": self.created_at.isoformat()
         }
     
-    def get_region_by_name(self, name: str) -> Optional[OcrRegion]:
+    def get_region_by_name(self, name: str) -> OcrRegion | None:
         for region in self.ocr_regions:
             if region.label == name:
                 return region
         return None
     
-    def is_region_name_unique(self, name: str, exclude_id: Optional[str] = None) -> bool:
+    def is_region_name_unique(self, name: str, exclude_id: str | None = None) -> bool:
         for region in self.ocr_regions:
             if region.label == name and region.id != exclude_id:
                 return False
@@ -155,7 +154,7 @@ class SessionManager:
         print(f"[Sessions] Loading from: {SESSIONS_FILE}")
         
         try:
-            with open(SESSIONS_FILE, 'r') as f:
+            with open(SESSIONS_FILE) as f:
                 data = json.load(f)
             
             for sid, sdata in data.items():
@@ -208,8 +207,8 @@ class SessionManager:
         camera_index: int,
         camera_name: str = "",
         camera_device_name: str = "",
-        camera_vid: Optional[int] = None,
-        camera_pid: Optional[int] = None,
+        camera_vid: int | None = None,
+        camera_pid: int | None = None,
     ) -> Session:
         session_id = str(uuid.uuid4())[:8]
         default_name = f"Camera {camera_index + 1:02d}"
@@ -225,7 +224,7 @@ class SessionManager:
         self.save_sessions()
         return session
 
-    def get_session(self, session_id: str) -> Optional[Session]:
+    def get_session(self, session_id: str) -> Session | None:
         return self.sessions.get(session_id)
 
     def delete_session(self, session_id: str) -> bool:
@@ -238,8 +237,8 @@ class SessionManager:
     def list_sessions(self) -> list[Session]:
         return list(self.sessions.values())
 
-    def update_perspective(self, session_id: str, points: Optional[list[tuple[int, int]]], 
-                           output_size: Optional[tuple[int, int]] = None) -> bool:
+    def update_perspective(self, session_id: str, points: list[tuple[int, int]] | None, 
+                           output_size: tuple[int, int] | None = None) -> bool:
         session = self.get_session(session_id)
         if session:
             session.perspective_points = points
@@ -249,7 +248,7 @@ class SessionManager:
             return True
         return False
 
-    def add_color_filter(self, session_id: str, bgr: list[int], tolerance: list[int]) -> Optional[ColorFilter]:
+    def add_color_filter(self, session_id: str, bgr: list[int], tolerance: list[int]) -> ColorFilter | None:
         session = self.get_session(session_id)
         if session:
             filter_id = str(uuid.uuid4())[:8]
@@ -260,7 +259,7 @@ class SessionManager:
         return None
 
     def update_color_filter(self, session_id: str, filter_id: str, 
-                            tolerance: Optional[list[int]] = None) -> bool:
+                            tolerance: list[int] | None = None) -> bool:
         session = self.get_session(session_id)
         if session:
             for cf in session.color_filters:
@@ -287,8 +286,8 @@ class SessionManager:
             return True
         return False
 
-    def update_morphology(self, session_id: str, erosion_kernel: Optional[int] = None,
-                          dilation_kernel: Optional[int] = None) -> bool:
+    def update_morphology(self, session_id: str, erosion_kernel: int | None = None,
+                          dilation_kernel: int | None = None) -> bool:
         session = self.get_session(session_id)
         if session:
             if erosion_kernel is not None:
@@ -300,7 +299,7 @@ class SessionManager:
         return False
 
     def add_ocr_region(self, session_id: str, x: int, y: int, width: int, height: int, 
-                       label: str = "") -> Optional[OcrRegion]:
+                       label: str = "") -> OcrRegion | None:
         session = self.get_session(session_id)
         if session:
             region_id = str(uuid.uuid4())[:8]
@@ -321,10 +320,10 @@ class SessionManager:
         return None
 
     def update_ocr_region(self, session_id: str, region_id: str, 
-                          x: Optional[int] = None, y: Optional[int] = None,
-                          width: Optional[int] = None, height: Optional[int] = None,
-                          label: Optional[str] = None, ocr_backend: Optional[str] = None,
-                          region_type: Optional[str] = None, score_subtype: Optional[str] = None) -> bool:
+                          x: int | None = None, y: int | None = None,
+                          width: int | None = None, height: int | None = None,
+                          label: str | None = None, ocr_backend: str | None = None,
+                          region_type: str | None = None, score_subtype: str | None = None) -> bool:
         session = self.get_session(session_id)
         if session:
             for region in session.ocr_regions:
@@ -368,7 +367,7 @@ class SessionManager:
         return False
 
     def add_glyph(self, session_id: str, char: str, template: list[list[int]], 
-                  width: int, height: int, ignored: bool = False) -> Optional[Glyph]:
+                  width: int, height: int, ignored: bool = False) -> Glyph | None:
         session = self.get_session(session_id)
         if session:
             glyph_id = str(uuid.uuid4())[:8]
@@ -378,8 +377,8 @@ class SessionManager:
             return glyph
         return None
 
-    def update_glyph(self, session_id: str, glyph_id: str, char: Optional[str] = None,
-                     ignored: Optional[bool] = None) -> bool:
+    def update_glyph(self, session_id: str, glyph_id: str, char: str | None = None,
+                     ignored: bool | None = None) -> bool:
         session = self.get_session(session_id)
         if session:
             for glyph in session.glyphs:

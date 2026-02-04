@@ -7,7 +7,10 @@ import {
 } from '../api'
 
 const props = defineProps({
-  session: Object,
+  session: {
+    type: Object,
+    default: null
+  },
   ocrResults: {
     type: Object,
     default: () => ({})
@@ -59,30 +62,12 @@ function cancelEdit() {
   editingName.value = ''
 }
 
-function getRegionText(regionName) {
-  const result = props.ocrResults[regionName]
-  if (!result) return ''
-  return result.text || ''
-}
-
 function getRegionConfidence(regionName) {
   const result = props.ocrResults[regionName]
   if (!result || !Array.isArray(result.detections) || result.detections.length === 0) return null
   const avg = result.detections.reduce((sum, d) => sum + d.confidence, 0) / result.detections.length
   return Math.round(avg * 100)
 }
-
-function hasDetections(regionName) {
-  const result = props.ocrResults[regionName]
-  return result && Array.isArray(result.detections) && result.detections.length > 0
-}
-
-const allRegionNames = computed(() => {
-  const fromResults = Object.keys(props.ocrResults)
-  const fromRegions = (props.session?.ocr_regions || []).map(r => r.label)
-  const all = new Set([...fromResults, ...fromRegions])
-  return Array.from(all).filter(n => n !== '_full')
-})
 
 // Glyph training functions
 async function handleDetectGlyphs() {
@@ -342,21 +327,29 @@ function templateToDataUrl(template) {
   <div class="p-5 space-y-6">
     <section>
       <div class="flex items-center justify-between mb-4">
-        <h3 class="text-xs uppercase tracking-widest text-midnight-500">OCR Regions</h3>
+        <h3 class="text-xs uppercase tracking-widest text-midnight-500">
+          OCR Regions
+        </h3>
         <button 
           v-if="session?.ocr_regions?.length"
-          @click="$emit('clear-regions')"
           class="text-xs text-midnight-600 hover:text-ember-400 transition-colors"
+          @click="$emit('clear-regions')"
         >
           Clear All
         </button>
       </div>
 
-      <div v-if="!session?.ocr_regions?.length" class="text-sm text-midnight-600 text-center py-4">
+      <div
+        v-if="!session?.ocr_regions?.length"
+        class="text-sm text-midnight-600 text-center py-4"
+      >
         No regions defined. Draw rectangles on the video to create OCR regions.
       </div>
 
-      <div v-else class="space-y-3">
+      <div
+        v-else
+        class="space-y-3"
+      >
         <div 
           v-for="(region, index) in session.ocr_regions" 
           :key="region.id"
@@ -373,29 +366,38 @@ function templateToDataUrl(template) {
               <template v-if="editingId === region.id">
                 <input
                   v-model="editingName"
+                  class="flex-1 bg-midnight-900 border border-midnight-600 rounded px-2 py-1 text-sm text-midnight-100 focus:outline-none focus:border-electric-500"
+                  autofocus
                   @keyup.enter="saveEdit(region.id)"
                   @keyup.escape="cancelEdit"
                   @blur="saveEdit(region.id)"
-                  class="flex-1 bg-midnight-900 border border-midnight-600 rounded px-2 py-1 text-sm text-midnight-100 focus:outline-none focus:border-electric-500"
-                  autofocus
-                />
+                >
               </template>
               <template v-else>
                 <span 
                   class="text-sm text-midnight-300 truncate cursor-pointer hover:text-electric-400"
-                  @dblclick="startEditing(region)"
                   :title="'Double-click to rename'"
+                  @dblclick="startEditing(region)"
                 >
                   {{ region.label }}
                 </span>
               </template>
             </div>
             <button
-              @click="$emit('delete-region', region.id)"
               class="p-1 text-midnight-600 hover:text-ember-400 transition-colors flex-shrink-0 ml-2"
+              @click="$emit('delete-region', region.id)"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-4 w-4"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path
+                  fill-rule="evenodd"
+                  d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                  clip-rule="evenodd"
+                />
               </svg>
             </button>
           </div>
@@ -410,31 +412,41 @@ function templateToDataUrl(template) {
             <span class="text-xs text-midnight-500">Type:</span>
             <select
               :value="region.region_type || 'generic'"
-              @change="(e) => handleRegionTypeChange(region.id, e.target.value)"
               class="bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
+              @change="(e) => handleRegionTypeChange(region.id, e.target.value)"
             >
-              <option value="generic">Generic</option>
-              <option value="time">Time</option>
-              <option value="score">Score</option>
+              <option value="generic">
+                Generic
+              </option>
+              <option value="time">
+                Time
+              </option>
+              <option value="score">
+                Score
+              </option>
             </select>
 
             <!-- Score subtype selector -->
             <template v-if="region.region_type === 'score'">
               <select
                 :value="region.score_subtype || ''"
-                @change="(e) => handleScoreSubtypeChange(region.id, e.target.value)"
                 class="bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
+                @change="(e) => handleScoreSubtypeChange(region.id, e.target.value)"
               >
-                <option value="">Any</option>
-                <option value="singles">Singles (+/-1)</option>
+                <option value="">
+                  Any
+                </option>
+                <option value="singles">
+                  Singles (+/-1)
+                </option>
               </select>
               
               <!-- Reset button for singles mode -->
               <button
                 v-if="region.score_subtype === 'singles'"
-                @click="handleResetValidator(region.id)"
                 class="px-2 py-1 bg-ember-500/20 hover:bg-ember-500/30 text-ember-400 text-xs rounded"
                 title="Reset validator state"
+                @click="handleResetValidator(region.id)"
               >
                 Reset
               </button>
@@ -444,11 +456,15 @@ function templateToDataUrl(template) {
             <template v-if="region.region_type === 'time'">
               <select
                 :value="region.time_format || 'm:ss'"
-                @change="(e) => handleTimeFormatChange(region.id, e.target.value)"
                 class="bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
+                @change="(e) => handleTimeFormatChange(region.id, e.target.value)"
               >
-                <option value="m:ss">m:ss</option>
-                <option value="mm:ss">mm:ss</option>
+                <option value="m:ss">
+                  m:ss
+                </option>
+                <option value="mm:ss">
+                  mm:ss
+                </option>
               </select>
             </template>
           </div>
@@ -457,7 +473,10 @@ function templateToDataUrl(template) {
           <div class="mt-3 pt-2 border-t border-midnight-700">
             <div class="flex items-center justify-between mb-1">
               <span class="text-xs text-midnight-500">OCR Result</span>
-              <span v-if="getRegionConfidence(region.label)" class="text-xs text-midnight-600">
+              <span
+                v-if="getRegionConfidence(region.label)"
+                class="text-xs text-midnight-600"
+              >
                 {{ getRegionConfidence(region.label) }}%
               </span>
             </div>
@@ -493,25 +512,27 @@ function templateToDataUrl(template) {
     <!-- Glyph Training Section -->
     <section>
       <div class="flex items-center justify-between mb-4">
-        <h3 class="text-xs uppercase tracking-widest text-midnight-500">Glyph Training</h3>
+        <h3 class="text-xs uppercase tracking-widest text-midnight-500">
+          Glyph Training
+        </h3>
         <div class="flex items-center gap-2">
           <button 
             v-if="session?.glyphs?.length"
-            @click="openExportDialog"
             class="text-xs text-electric-400 hover:text-electric-300 transition-colors"
+            @click="openExportDialog"
           >
             Export
           </button>
           <button 
-            @click="openImportDialog"
             class="text-xs text-electric-400 hover:text-electric-300 transition-colors"
+            @click="openImportDialog"
           >
             Import
           </button>
           <button 
             v-if="session?.glyphs?.length"
-            @click="handleClearGlyphs"
             class="text-xs text-midnight-600 hover:text-ember-400 transition-colors"
+            @click="handleClearGlyphs"
           >
             Clear All
           </button>
@@ -528,15 +549,21 @@ function templateToDataUrl(template) {
           v-model="selectedRegionForGlyphs"
           class="flex-1 bg-midnight-900 border border-midnight-700 rounded px-2 py-2 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
         >
-          <option :value="null">Full processed frame</option>
-          <option v-for="region in session?.ocr_regions" :key="region.id" :value="region.id">
+          <option :value="null">
+            Full processed frame
+          </option>
+          <option
+            v-for="region in session?.ocr_regions"
+            :key="region.id"
+            :value="region.id"
+          >
             {{ region.label }}
           </option>
         </select>
         <button
-          @click="handleDetectGlyphs"
           :disabled="isDetecting"
           class="px-3 py-2 bg-electric-500 hover:bg-electric-400 disabled:bg-midnight-700 text-midnight-950 disabled:text-midnight-500 text-xs font-medium rounded transition-colors"
+          @click="handleDetectGlyphs"
         >
           {{ isDetecting ? 'Detecting...' : 'Detect' }}
         </button>
@@ -545,25 +572,38 @@ function templateToDataUrl(template) {
       <!-- Merge vertical option -->
       <label class="flex items-center gap-2 mb-3 text-xs text-midnight-400 cursor-pointer">
         <input
-          type="checkbox"
           v-model="mergeVertical"
+          type="checkbox"
           class="w-3.5 h-3.5 rounded border-midnight-600 bg-midnight-900 text-electric-500 focus:ring-electric-500 focus:ring-offset-0"
-        />
+        >
         <span>Auto-merge vertical (for ":" etc.)</span>
       </label>
 
       <!-- Detected glyphs for labeling -->
-      <div v-if="detectedGlyphs.length" class="mb-4">
+      <div
+        v-if="detectedGlyphs.length"
+        class="mb-4"
+      >
         <div class="flex items-center justify-between mb-2">
-          <div class="text-xs text-midnight-500">Detected Glyphs ({{ detectedGlyphs.length }})</div>
-          <div v-if="selectedCount > 0" class="text-xs text-electric-400">
+          <div class="text-xs text-midnight-500">
+            Detected Glyphs ({{ detectedGlyphs.length }})
+          </div>
+          <div
+            v-if="selectedCount > 0"
+            class="text-xs text-electric-400"
+          >
             {{ selectedCount }} selected
           </div>
         </div>
 
         <!-- Combine UI when multiple selected -->
-        <div v-if="selectedCount >= 2" class="bg-electric-500/10 border border-electric-500/30 rounded-lg p-3 mb-3">
-          <div class="text-xs text-electric-400 mb-2">Combine {{ selectedCount }} glyphs into one:</div>
+        <div
+          v-if="selectedCount >= 2"
+          class="bg-electric-500/10 border border-electric-500/30 rounded-lg p-3 mb-3"
+        >
+          <div class="text-xs text-electric-400 mb-2">
+            Combine {{ selectedCount }} glyphs into one:
+          </div>
           <div class="flex gap-2">
             <input
               v-model="combineLabel"
@@ -571,17 +611,17 @@ function templateToDataUrl(template) {
               placeholder="Label (e.g. :)"
               class="flex-1 bg-midnight-900 border border-midnight-700 rounded px-2 py-1.5 text-xs text-midnight-200 focus:outline-none focus:border-electric-500"
               @keyup.enter="handleCombineSelected"
-            />
+            >
             <button
-              @click="handleCombineSelected"
               :disabled="!combineLabel"
               class="px-3 py-1.5 bg-electric-500 hover:bg-electric-400 disabled:bg-midnight-700 text-midnight-950 disabled:text-midnight-500 text-xs font-medium rounded transition-colors"
+              @click="handleCombineSelected"
             >
               Combine
             </button>
             <button
-              @click="clearSelection"
               class="px-2 py-1.5 bg-midnight-700 hover:bg-midnight-600 text-midnight-300 text-xs rounded transition-colors"
+              @click="clearSelection"
             >
               Cancel
             </button>
@@ -596,17 +636,17 @@ function templateToDataUrl(template) {
           <div
             v-for="glyph in detectedGlyphs"
             :key="glyph.index"
-            @click="toggleGlyphSelection(glyph.index)"
             class="flex flex-col rounded p-2 text-center cursor-pointer transition-all"
             :class="isGlyphSelected(glyph.index)
               ? 'bg-electric-500/20 border-2 border-electric-500'
               : 'bg-midnight-800 border-2 border-transparent hover:border-midnight-600'"
+            @click="toggleGlyphSelection(glyph.index)"
           >
             <img
               :src="templateToDataUrl(glyph.template)"
               class="w-8 h-12 mx-auto object-contain bg-white rounded"
               style="image-rendering: pixelated;"
-            />
+            >
             <div class="text-[10px] text-midnight-500 h-4 flex items-center justify-center">
               <span v-if="glyph.merged_count > 1">(merged: {{ glyph.merged_count }})</span>
             </div>
@@ -614,22 +654,22 @@ function templateToDataUrl(template) {
               v-model="glyphLabels[glyph.index]"
               maxlength="2"
               placeholder="?"
-              @click.stop
               class="w-full bg-midnight-900 border border-midnight-700 rounded px-1 py-0.5 text-xs text-center text-midnight-200 focus:outline-none focus:border-electric-500"
+              @click.stop
               @keyup.enter="handleSaveGlyph(glyph)"
-            />
+            >
             <div class="flex gap-1 mt-1">
               <button
-                @click.stop="handleSaveGlyph(glyph)"
                 :disabled="!glyphLabels[glyph.index]"
                 class="flex-1 px-1 py-0.5 bg-electric-500/20 hover:bg-electric-500/30 disabled:bg-midnight-700/50 text-electric-400 disabled:text-midnight-600 text-xs rounded"
+                @click.stop="handleSaveGlyph(glyph)"
               >
                 Save
               </button>
               <button
-                @click.stop="handleIgnoreGlyph(glyph)"
                 class="px-1 py-0.5 bg-midnight-700 hover:bg-midnight-600 text-midnight-400 text-xs rounded"
                 title="Ignore this glyph"
+                @click.stop="handleIgnoreGlyph(glyph)"
               >
                 Ign
               </button>
@@ -640,7 +680,9 @@ function templateToDataUrl(template) {
 
       <!-- Saved glyphs -->
       <div v-if="session?.glyphs?.length">
-        <div class="text-xs text-midnight-500 mb-2">Trained Glyphs ({{ session.glyphs.length }})</div>
+        <div class="text-xs text-midnight-500 mb-2">
+          Trained Glyphs ({{ session.glyphs.length }})
+        </div>
         <div class="flex flex-wrap gap-2">
           <div 
             v-for="glyph in session.glyphs" 
@@ -653,7 +695,7 @@ function templateToDataUrl(template) {
               class="w-6 h-9 mx-auto mb-1 object-contain rounded"
               :class="glyph.ignored ? 'bg-midnight-700 opacity-50' : 'bg-white'"
               style="image-rendering: pixelated;"
-            />
+            >
             <div 
               class="text-xs font-mono"
               :class="glyph.ignored ? 'text-midnight-600 line-through' : 'text-electric-400'"
@@ -662,15 +704,15 @@ function templateToDataUrl(template) {
             </div>
             <div class="absolute -top-1 -right-1 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
               <button
-                @click="handleToggleIgnored(glyph.id, glyph.ignored)"
                 class="w-4 h-4 bg-midnight-600 hover:bg-midnight-500 text-midnight-300 rounded-full text-xs flex items-center justify-center"
                 :title="glyph.ignored ? 'Un-ignore' : 'Ignore'"
+                @click="handleToggleIgnored(glyph.id, glyph.ignored)"
               >
                 {{ glyph.ignored ? '✓' : '−' }}
               </button>
               <button
-                @click="handleDeleteGlyph(glyph.id)"
                 class="w-4 h-4 bg-ember-500 text-white rounded-full text-xs flex items-center justify-center"
+                @click="handleDeleteGlyph(glyph.id)"
               >
                 ×
               </button>
@@ -679,7 +721,10 @@ function templateToDataUrl(template) {
         </div>
       </div>
 
-      <div v-else-if="!detectedGlyphs.length" class="text-sm text-midnight-600 text-center py-4">
+      <div
+        v-else-if="!detectedGlyphs.length"
+        class="text-sm text-midnight-600 text-center py-4"
+      >
         No glyphs trained yet. Click "Detect" to find characters.
       </div>
     </section>
@@ -687,7 +732,9 @@ function templateToDataUrl(template) {
     <div class="border-t border-midnight-800" />
 
     <section>
-      <h3 class="text-xs uppercase tracking-widest text-midnight-500 mb-4">Info</h3>
+      <h3 class="text-xs uppercase tracking-widest text-midnight-500 mb-4">
+        Info
+      </h3>
       
       <div class="space-y-2 text-sm">
         <div class="flex items-center justify-between">
@@ -714,41 +761,52 @@ function templateToDataUrl(template) {
     <div class="border-t border-midnight-800" />
 
     <section>
-      <h3 class="text-xs uppercase tracking-widest text-midnight-500 mb-3">API Endpoints</h3>
+      <h3 class="text-xs uppercase tracking-widest text-midnight-500 mb-3">
+        API Endpoints
+      </h3>
       <div class="space-y-2 text-xs">
         <div class="bg-midnight-800/50 rounded p-2 font-mono text-midnight-400">
           GET /ocr/{{ session?.id }}
         </div>
-        <p class="text-midnight-600">Returns all regions with OCR results as JSON</p>
+        <p class="text-midnight-600">
+          Returns all regions with OCR results as JSON
+        </p>
         
         <div class="bg-midnight-800/50 rounded p-2 font-mono text-midnight-400">
           GET /ocr/{{ session?.id }}/{'{region_name}'}
         </div>
-        <p class="text-midnight-600">Returns plain text result for a specific region</p>
+        <p class="text-midnight-600">
+          Returns plain text result for a specific region
+        </p>
       </div>
     </section>
 
     <!-- Export Dialog -->
-    <div v-if="showExportDialog" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+    <div
+      v-if="showExportDialog"
+      class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+    >
       <div class="bg-midnight-900 rounded-lg p-5 w-80 border border-midnight-700">
-        <h4 class="text-sm font-medium text-midnight-200 mb-4">Export Glyphs</h4>
+        <h4 class="text-sm font-medium text-midnight-200 mb-4">
+          Export Glyphs
+        </h4>
         <input
           v-model="exportName"
           placeholder="Glyph set name"
           class="w-full bg-midnight-800 border border-midnight-700 rounded px-3 py-2 text-sm text-midnight-200 focus:outline-none focus:border-electric-500 mb-4"
           @keyup.enter="handleExportGlyphs"
-        />
+        >
         <div class="flex justify-end gap-2">
           <button
-            @click="showExportDialog = false"
             class="px-3 py-1.5 text-sm text-midnight-400 hover:text-midnight-300"
+            @click="showExportDialog = false"
           >
             Cancel
           </button>
           <button
-            @click="handleExportGlyphs"
             :disabled="!exportName.trim()"
             class="px-3 py-1.5 bg-electric-500 hover:bg-electric-400 disabled:bg-midnight-700 text-midnight-950 disabled:text-midnight-500 text-sm rounded"
+            @click="handleExportGlyphs"
           >
             Export
           </button>
@@ -757,61 +815,88 @@ function templateToDataUrl(template) {
     </div>
 
     <!-- Import Dialog -->
-    <div v-if="showImportDialog" class="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+    <div
+      v-if="showImportDialog"
+      class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+    >
       <div class="bg-midnight-900 rounded-lg p-5 w-96 border border-midnight-700 max-h-[80vh] flex flex-col">
-        <h4 class="text-sm font-medium text-midnight-200 mb-4">Import Glyphs</h4>
+        <h4 class="text-sm font-medium text-midnight-200 mb-4">
+          Import Glyphs
+        </h4>
         
-        <div v-if="!glyphSets.length" class="text-sm text-midnight-500 text-center py-4">
+        <div
+          v-if="!glyphSets.length"
+          class="text-sm text-midnight-500 text-center py-4"
+        >
           No glyph sets saved yet. Export glyphs from a session first.
         </div>
         
-        <div v-else class="flex-1 overflow-y-auto space-y-2 mb-4">
+        <div
+          v-else
+          class="flex-1 overflow-y-auto space-y-2 mb-4"
+        >
           <div
             v-for="gs in glyphSets"
             :key="gs.id"
-            @click="selectedImportSet = gs.id"
             class="p-3 rounded-lg cursor-pointer transition-all"
             :class="selectedImportSet === gs.id 
               ? 'bg-electric-500/20 border border-electric-500' 
               : 'bg-midnight-800 border border-transparent hover:border-midnight-600'"
+            @click="selectedImportSet = gs.id"
           >
             <div class="flex items-center justify-between">
               <div>
-                <div class="text-sm text-midnight-200">{{ gs.name }}</div>
-                <div class="text-xs text-midnight-500">{{ gs.glyph_count }} glyphs</div>
+                <div class="text-sm text-midnight-200">
+                  {{ gs.name }}
+                </div>
+                <div class="text-xs text-midnight-500">
+                  {{ gs.glyph_count }} glyphs
+                </div>
               </div>
               <button
-                @click.stop="handleDeleteGlyphSet(gs.id)"
                 class="p-1 text-midnight-600 hover:text-ember-400 transition-colors"
+                @click.stop="handleDeleteGlyphSet(gs.id)"
               >
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                  <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  class="h-4 w-4"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                >
+                  <path
+                    fill-rule="evenodd"
+                    d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                    clip-rule="evenodd"
+                  />
                 </svg>
               </button>
             </div>
           </div>
         </div>
 
-        <label v-if="glyphSets.length" class="flex items-center gap-2 mb-4 text-xs text-midnight-400 cursor-pointer">
+        <label
+          v-if="glyphSets.length"
+          class="flex items-center gap-2 mb-4 text-xs text-midnight-400 cursor-pointer"
+        >
           <input
-            type="checkbox"
             v-model="importReplace"
+            type="checkbox"
             class="w-3.5 h-3.5 rounded border-midnight-600 bg-midnight-900 text-electric-500 focus:ring-electric-500 focus:ring-offset-0"
-          />
+          >
           <span>Replace existing glyphs (instead of adding)</span>
         </label>
 
         <div class="flex justify-end gap-2">
           <button
-            @click="showImportDialog = false; selectedImportSet = null"
             class="px-3 py-1.5 text-sm text-midnight-400 hover:text-midnight-300"
+            @click="showImportDialog = false; selectedImportSet = null"
           >
             Cancel
           </button>
           <button
-            @click="handleImportGlyphs"
             :disabled="!selectedImportSet"
             class="px-3 py-1.5 bg-electric-500 hover:bg-electric-400 disabled:bg-midnight-700 text-midnight-950 disabled:text-midnight-500 text-sm rounded"
+            @click="handleImportGlyphs"
           >
             Import
           </button>

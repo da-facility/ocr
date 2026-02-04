@@ -4,13 +4,14 @@ IPC protocol for communication between the FastAPI webserver and the ML/camera w
 Uses multiprocessing Pipe for commands and shared memory for frames to avoid serialization overhead.
 """
 import multiprocessing as mp
-from multiprocessing.connection import Connection
-from dataclasses import dataclass, field
-from typing import Any, Optional
-from enum import Enum
-import numpy as np
-import time
 import threading
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from multiprocessing.connection import Connection
+from typing import Any
+
+import numpy as np
 
 
 class Command(Enum):
@@ -86,7 +87,7 @@ class IPCResponse:
     """A response from the worker."""
     success: bool
     data: Any = None
-    error: Optional[str] = None
+    error: str | None = None
     request_id: int = 0
 
 
@@ -103,7 +104,7 @@ class FrameCache:
         with self.lock:
             self.frames[key] = (frame.copy(), time.time())
     
-    def get(self, key: str) -> tuple[Optional[np.ndarray], bool]:
+    def get(self, key: str) -> tuple[np.ndarray | None, bool]:
         """Get a frame. Returns (frame, is_stale). Returns (None, True) if no frame."""
         with self.lock:
             if key not in self.frames:
@@ -136,7 +137,7 @@ class ResultCache:
         with self.lock:
             self.results[session_id] = (results.copy(), time.time())
     
-    def get(self, session_id: str) -> tuple[Optional[dict], bool]:
+    def get(self, session_id: str) -> tuple[dict | None, bool]:
         """Get results. Returns (results, is_stale). Returns (None, True) if no results."""
         with self.lock:
             if session_id not in self.results:
@@ -173,7 +174,7 @@ class IPCClient:
         self._request_counter += 1
         return self._request_counter
     
-    def send_command(self, command: Command, timeout: Optional[float] = None, **kwargs) -> IPCResponse:
+    def send_command(self, command: Command, timeout: float | None = None, **kwargs) -> IPCResponse:
         """Send a command and wait for response with timeout."""
         if timeout is None:
             timeout = self.timeout
@@ -198,7 +199,10 @@ class IPCClient:
                             if response.request_id == request_id:
                                 return response
                             # Stale response from a timed-out request, discard and keep waiting
-                            print(f"[IPC] Discarding stale response (got id={response.request_id}, expected={request_id})")
+                            print(
+                                "[IPC] Discarding stale response "
+                                f"(got id={response.request_id}, expected={request_id})"
+                            )
                             continue
                         return IPCResponse(success=False, error="Invalid response type")
                     else:
@@ -213,7 +217,7 @@ class IPCClient:
     
     # Convenience methods with caching
     
-    def get_frame(self, session_id: str, stream_type: str = "processed") -> tuple[Optional[np.ndarray], bool]:
+    def get_frame(self, session_id: str, stream_type: str = "processed") -> tuple[np.ndarray | None, bool]:
         """
         Get a frame for streaming. Returns (frame, is_stale).
         Uses cache on timeout to avoid blocking.
@@ -235,7 +239,7 @@ class IPCClient:
         # On timeout/error, return cached frame
         return self.frame_cache.get(cache_key)
     
-    def get_ocr_results(self, session_id: str) -> tuple[Optional[dict], bool]:
+    def get_ocr_results(self, session_id: str) -> tuple[dict | None, bool]:
         """
         Get OCR results. Returns (results, is_stale).
         Uses cache on timeout.

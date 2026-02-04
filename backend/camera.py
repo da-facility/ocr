@@ -1,10 +1,10 @@
-import cv2
+import platform
 import threading
 import time
 from dataclasses import dataclass
-from typing import Optional
+
+import cv2
 import numpy as np
-import platform
 from cv2_enumerate_cameras import enumerate_cameras
 
 # Use DirectShow on Windows for consistent camera enumeration
@@ -20,8 +20,8 @@ class CameraInfo:
     """Stable camera identification using VID+PID."""
     index: int  # Current system index (may change)
     name: str  # Device name
-    vid: Optional[int]  # USB Vendor ID (stable)
-    pid: Optional[int]  # USB Product ID (stable)
+    vid: int | None  # USB Vendor ID (stable)
+    pid: int | None  # USB Product ID (stable)
 
     @property
     def stable_id(self) -> str:
@@ -85,7 +85,7 @@ class CameraEnumerator:
         """Force a cache refresh and return updated list."""
         return self.list_cameras(force_refresh=True)
 
-    def find_by_stable_id(self, stable_id: str) -> Optional[CameraInfo]:
+    def find_by_stable_id(self, stable_id: str) -> CameraInfo | None:
         """Find camera by its stable ID, returns current info with updated index."""
         cameras = self.list_cameras()
         for cam in cameras:
@@ -93,7 +93,7 @@ class CameraEnumerator:
                 return cam
         return None
 
-    def find_by_vid_pid(self, vid: Optional[int], pid: Optional[int]) -> Optional[CameraInfo]:
+    def find_by_vid_pid(self, vid: int | None, pid: int | None) -> CameraInfo | None:
         """Find camera by VID/PID combination."""
         if vid is None or pid is None:
             return None
@@ -103,7 +103,7 @@ class CameraEnumerator:
                 return cam
         return None
 
-    def find_by_name(self, name: str) -> Optional[CameraInfo]:
+    def find_by_name(self, name: str) -> CameraInfo | None:
         """Find camera by name (fallback when VID/PID unavailable)."""
         cameras = self.list_cameras()
         for cam in cameras:
@@ -111,7 +111,7 @@ class CameraEnumerator:
                 return cam
         return None
 
-    def resolve_index(self, vid: Optional[int], pid: Optional[int], name: str, fallback_index: int) -> int:
+    def resolve_index(self, vid: int | None, pid: int | None, name: str, fallback_index: int) -> int:
         """
         Resolve a camera to its current index using stable identifiers.
 
@@ -146,7 +146,7 @@ def _open_video_capture(index: int) -> cv2.VideoCapture:
     return cv2.VideoCapture(index)
 
 
-def _read_frame_size(cap: cv2.VideoCapture) -> Optional[tuple[int, int]]:
+def _read_frame_size(cap: cv2.VideoCapture) -> tuple[int, int] | None:
     ret, frame = cap.read()
     if not ret or frame is None:
         return None
@@ -154,7 +154,7 @@ def _read_frame_size(cap: cv2.VideoCapture) -> Optional[tuple[int, int]]:
     return width, height
 
 
-def _try_set_resolution(cap: cv2.VideoCapture, sizes: list[tuple[int, int]]) -> Optional[tuple[int, int]]:
+def _try_set_resolution(cap: cv2.VideoCapture, sizes: list[tuple[int, int]]) -> tuple[int, int] | None:
     for width, height in sizes:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
@@ -167,11 +167,11 @@ def _try_set_resolution(cap: cv2.VideoCapture, sizes: list[tuple[int, int]]) -> 
 class CameraCapture:
     def __init__(self, camera_index: int):
         self.camera_index = camera_index
-        self.cap: Optional[cv2.VideoCapture] = None
-        self.frame: Optional[np.ndarray] = None
+        self.cap: cv2.VideoCapture | None = None
+        self.frame: np.ndarray | None = None
         self.lock = threading.Lock()
         self.running = False
-        self.thread: Optional[threading.Thread] = None
+        self.thread: threading.Thread | None = None
 
     def start(self) -> bool:
         if self.running:
@@ -206,7 +206,7 @@ class CameraCapture:
                     self.frame = frame
             time.sleep(0.01)
 
-    def get_frame(self) -> Optional[np.ndarray]:
+    def get_frame(self) -> np.ndarray | None:
         with self.lock:
             if self.frame is not None:
                 return self.frame.copy()
@@ -229,7 +229,7 @@ class CameraManager:
         self.lock = threading.Lock()
         self.enumerator = _enumerator
 
-    def acquire_camera(self, camera_index: int) -> Optional[CameraCapture]:
+    def acquire_camera(self, camera_index: int) -> CameraCapture | None:
         with self.lock:
             if camera_index in self.cameras:
                 self.ref_counts[camera_index] += 1
@@ -244,11 +244,11 @@ class CameraManager:
 
     def acquire_camera_by_id(
         self,
-        vid: Optional[int],
-        pid: Optional[int],
+        vid: int | None,
+        pid: int | None,
         name: str,
         fallback_index: int
-    ) -> tuple[Optional[CameraCapture], int]:
+    ) -> tuple[CameraCapture | None, int]:
         """
         Acquire camera using stable identifiers, resolving to current index.
         Returns (camera, resolved_index) tuple.
@@ -267,7 +267,7 @@ class CameraManager:
                         del self.cameras[camera_index]
                     del self.ref_counts[camera_index]
 
-    def get_camera(self, camera_index: int) -> Optional[CameraCapture]:
+    def get_camera(self, camera_index: int) -> CameraCapture | None:
         with self.lock:
             return self.cameras.get(camera_index)
 
@@ -281,7 +281,7 @@ class CameraManager:
         cameras = self.enumerator.refresh()
         return [cam.to_dict() for cam in cameras]
 
-    def get_camera_info(self, index: int) -> Optional[CameraInfo]:
+    def get_camera_info(self, index: int) -> CameraInfo | None:
         """Get camera info by current index."""
         cameras = self.enumerator.list_cameras()
         for cam in cameras:

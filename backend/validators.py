@@ -2,8 +2,6 @@
 Validators for OCR region types.
 Apply validation and parsing to OCR results based on region type.
 """
-from typing import Optional
-import re
 
 
 class ScoreValidator:
@@ -17,9 +15,9 @@ class ScoreValidator:
     
     def __init__(self, singles_mode: bool = False):
         self.singles_mode = singles_mode
-        self.last_value: Optional[int] = None
+        self.last_value: int | None = None
     
-    def validate(self, text: str) -> Optional[str]:
+    def validate(self, text: str) -> str | None:
         """
         Validate and clean a score value.
         
@@ -80,7 +78,7 @@ class TimeValidator:
     """
     
     def __init__(self, time_format: str = "m:ss"):
-        self.last_stable_result: Optional[dict] = None
+        self.last_stable_result: dict | None = None
         self.time_format = time_format  # "m:ss" or "mm:ss"
     
     def set_format(self, time_format: str):

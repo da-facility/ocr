@@ -2,8 +2,14 @@
 import { ref, watch } from 'vue'
 
 const props = defineProps({
-  session: Object,
-  colorPickerMode: Boolean,
+  session: {
+    type: Object,
+    default: null
+  },
+  colorPickerMode: {
+    type: Boolean,
+    default: false
+  },
   layout: {
     type: String,
     default: 'vertical'
@@ -46,35 +52,59 @@ watch(() => props.session, initFromSession, { immediate: true })
   <div class="p-5 space-y-6">
     <section>
       <div class="flex items-center justify-between mb-4">
-        <h3 class="text-xs uppercase tracking-widest text-midnight-500">Layout</h3>
+        <h3 class="text-xs uppercase tracking-widest text-midnight-500">
+          Layout
+        </h3>
       </div>
 
       <div class="flex gap-2">
         <button
-          @click="$emit('toggle-layout')"
           :class="[
             'flex-1 py-2 px-3 text-xs font-medium rounded-lg transition-all flex items-center justify-center gap-2',
             layout === 'vertical' 
               ? 'bg-electric-500 text-midnight-950' 
               : 'bg-midnight-800 hover:bg-midnight-700 text-midnight-400'
           ]"
+          @click="$emit('toggle-layout')"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-4 w-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M4 6h16M4 12h16M4 18h16"
+            />
           </svg>
           Stacked
         </button>
         <button
-          @click="$emit('toggle-layout')"
           :class="[
             'flex-1 py-2 px-3 text-xs font-medium rounded-lg transition-all flex items-center justify-center gap-2',
             layout === 'horizontal' 
               ? 'bg-electric-500 text-midnight-950' 
               : 'bg-midnight-800 hover:bg-midnight-700 text-midnight-400'
           ]"
+          @click="$emit('toggle-layout')"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7" />
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-4 w-4"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="2"
+              d="M9 17V7m0 10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2h2a2 2 0 012 2m0 10a2 2 0 002 2h2a2 2 0 002-2M9 7a2 2 0 012-2h2a2 2 0 012 2m0 10V7"
+            />
           </svg>
           Side by Side
         </button>
@@ -85,17 +115,19 @@ watch(() => props.session, initFromSession, { immediate: true })
 
     <section>
       <div class="flex items-center justify-between mb-4">
-        <h3 class="text-xs uppercase tracking-widest text-midnight-500">Color Picker</h3>
+        <h3 class="text-xs uppercase tracking-widest text-midnight-500">
+          Color Picker
+        </h3>
       </div>
 
       <button
-        @click="$emit('toggle-picker')"
         :class="[
           'w-full py-3 px-4 text-sm font-medium rounded-lg transition-all duration-200',
           colorPickerMode 
             ? 'bg-electric-500 text-midnight-950 shadow-lg shadow-electric-500/20' 
             : 'bg-midnight-800 hover:bg-midnight-700 text-midnight-300'
         ]"
+        @click="$emit('toggle-picker')"
       >
         <span v-if="colorPickerMode">Click on video to pick color...</span>
         <span v-else>Pick Color from Video</span>
@@ -110,21 +142,29 @@ watch(() => props.session, initFromSession, { immediate: true })
 
     <section>
       <div class="flex items-center justify-between mb-4">
-        <h3 class="text-xs uppercase tracking-widest text-midnight-500">Color Filters</h3>
+        <h3 class="text-xs uppercase tracking-widest text-midnight-500">
+          Color Filters
+        </h3>
         <button 
           v-if="session?.color_filters?.length"
-          @click="$emit('clear-filters')"
           class="text-xs text-midnight-600 hover:text-ember-400 transition-colors"
+          @click="$emit('clear-filters')"
         >
           Clear All
         </button>
       </div>
 
-      <div v-if="!session?.color_filters?.length" class="text-sm text-midnight-600 text-center py-4">
+      <div
+        v-if="!session?.color_filters?.length"
+        class="text-sm text-midnight-600 text-center py-4"
+      >
         No colors added yet
       </div>
 
-      <div v-else class="space-y-3">
+      <div
+        v-else
+        class="space-y-3"
+      >
         <div 
           v-for="filter in session.color_filters" 
           :key="filter.id"
@@ -139,11 +179,20 @@ watch(() => props.session, initFromSession, { immediate: true })
               <span class="text-xs font-mono text-midnight-400">{{ bgrToHex(filter.bgr) }}</span>
             </div>
             <button
-              @click="$emit('delete-filter', filter.id)"
               class="p-1 text-midnight-600 hover:text-ember-400 transition-colors"
+              @click="$emit('delete-filter', filter.id)"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                class="h-4 w-4"
+                viewBox="0 0 20 20"
+                fill="currentColor"
+              >
+                <path
+                  fill-rule="evenodd"
+                  d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z"
+                  clip-rule="evenodd"
+                />
               </svg>
             </button>
           </div>
@@ -157,11 +206,11 @@ watch(() => props.session, initFromSession, { immediate: true })
               <input
                 type="range"
                 :value="filter.tolerance[0]"
-                @input="(e) => $emit('update-filter', filter.id, [parseInt(e.target.value), filter.tolerance[1], filter.tolerance[2]])"
                 min="0"
                 max="128"
                 class="w-full accent-blue-400"
-              />
+                @input="(e) => $emit('update-filter', filter.id, [parseInt(e.target.value), filter.tolerance[1], filter.tolerance[2]])"
+              >
             </div>
             <div>
               <div class="flex justify-between text-xs text-midnight-500 mb-1">
@@ -171,11 +220,11 @@ watch(() => props.session, initFromSession, { immediate: true })
               <input
                 type="range"
                 :value="filter.tolerance[1]"
-                @input="(e) => $emit('update-filter', filter.id, [filter.tolerance[0], parseInt(e.target.value), filter.tolerance[2]])"
                 min="0"
                 max="128"
                 class="w-full accent-green-400"
-              />
+                @input="(e) => $emit('update-filter', filter.id, [filter.tolerance[0], parseInt(e.target.value), filter.tolerance[2]])"
+              >
             </div>
             <div>
               <div class="flex justify-between text-xs text-midnight-500 mb-1">
@@ -185,11 +234,11 @@ watch(() => props.session, initFromSession, { immediate: true })
               <input
                 type="range"
                 :value="filter.tolerance[2]"
-                @input="(e) => $emit('update-filter', filter.id, [filter.tolerance[0], filter.tolerance[1], parseInt(e.target.value)])"
                 min="0"
                 max="128"
                 class="w-full accent-red-400"
-              />
+                @input="(e) => $emit('update-filter', filter.id, [filter.tolerance[0], filter.tolerance[1], parseInt(e.target.value)])"
+              >
             </div>
           </div>
         </div>
@@ -200,10 +249,12 @@ watch(() => props.session, initFromSession, { immediate: true })
 
     <section>
       <div class="flex items-center justify-between mb-4">
-        <h3 class="text-xs uppercase tracking-widest text-midnight-500">Morphology</h3>
+        <h3 class="text-xs uppercase tracking-widest text-midnight-500">
+          Morphology
+        </h3>
         <button 
-          @click="erosionKernel = 0; dilationKernel = 0; emitMorphology()"
           class="text-xs text-midnight-600 hover:text-midnight-400 transition-colors"
+          @click="erosionKernel = 0; dilationKernel = 0; emitMorphology()"
         >
           Turn Off
         </button>
@@ -216,13 +267,13 @@ watch(() => props.session, initFromSession, { immediate: true })
             <span class="font-mono">{{ erosionKernel === 0 ? 'Off' : erosionKernel + 'px' }}</span>
           </div>
           <input
-            type="range"
             v-model.number="erosionKernel"
-            @input="emitMorphology"
+            type="range"
             min="0"
             max="15"
             class="w-full accent-electric-500"
-          />
+            @input="emitMorphology"
+          >
         </div>
 
         <div>
@@ -231,13 +282,13 @@ watch(() => props.session, initFromSession, { immediate: true })
             <span class="font-mono">{{ dilationKernel === 0 ? 'Off' : dilationKernel + 'px' }}</span>
           </div>
           <input
-            type="range"
             v-model.number="dilationKernel"
-            @input="emitMorphology"
+            type="range"
             min="0"
             max="15"
             class="w-full accent-electric-500"
-          />
+            @input="emitMorphology"
+          >
         </div>
       </div>
     </section>
@@ -245,7 +296,9 @@ watch(() => props.session, initFromSession, { immediate: true })
     <div class="border-t border-midnight-800" />
 
     <section>
-      <h3 class="text-xs uppercase tracking-widest text-midnight-500 mb-3">Pipeline Info</h3>
+      <h3 class="text-xs uppercase tracking-widest text-midnight-500 mb-3">
+        Pipeline Info
+      </h3>
       <p class="text-xs text-midnight-600">
         Processing order: Perspective → Color Filters → Morphology
       </p>

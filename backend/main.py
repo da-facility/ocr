@@ -1,21 +1,25 @@
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse, PlainTextResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
-import os
-import sys
 import argparse
-from pathlib import Path
-import threading
-from pydantic import BaseModel
-from typing import Optional
 import asyncio
+import atexit
 import json
 import mimetypes
 import multiprocessing as mp
+import os
+import sys
+import threading
 import time
-import atexit
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+from ipc import Command, IPCClient
+from processing import frame_to_jpeg
+from worker import start_worker_process
 
 # Fix MIME types for Windows (Win10 registry often has .js as text/plain)
 mimetypes.add_type("application/javascript", ".js")
@@ -24,13 +28,9 @@ mimetypes.add_type("text/css", ".css")
 mimetypes.add_type("application/json", ".json")
 mimetypes.add_type("image/svg+xml", ".svg")
 
-from ipc import IPCClient, Command, create_ipc_pair
-from worker import start_worker_process
-from processing import frame_to_jpeg
-
 # Global worker process and IPC client
-_worker_process: Optional[mp.Process] = None
-_ipc_client: Optional[IPCClient] = None
+_worker_process: mp.Process | None = None
+_ipc_client: IPCClient | None = None
 
 
 def get_ipc_client() -> IPCClient:
@@ -146,13 +146,13 @@ class CreateSessionRequest(BaseModel):
     camera_index: int
     camera_name: str = ""
     camera_device_name: str = ""
-    camera_vid: Optional[int] = None
-    camera_pid: Optional[int] = None
+    camera_vid: int | None = None
+    camera_pid: int | None = None
 
 
 class PerspectiveRequest(BaseModel):
-    points: Optional[list[list[int]]]
-    output_size: Optional[list[int]] = None
+    points: list[list[int]] | None
+    output_size: list[int] | None = None
 
 
 class ColorFilterRequest(BaseModel):
@@ -165,8 +165,8 @@ class ColorFilterUpdateRequest(BaseModel):
 
 
 class MorphologyRequest(BaseModel):
-    erosion_kernel: Optional[int] = None
-    dilation_kernel: Optional[int] = None
+    erosion_kernel: int | None = None
+    dilation_kernel: int | None = None
 
 
 class PickColorRequest(BaseModel):
@@ -183,14 +183,14 @@ class OcrRegionRequest(BaseModel):
 
 
 class OcrRegionUpdateRequest(BaseModel):
-    x: Optional[int] = None
-    y: Optional[int] = None
-    width: Optional[int] = None
-    height: Optional[int] = None
-    label: Optional[str] = None
-    ocr_backend: Optional[str] = None
-    region_type: Optional[str] = None  # "generic", "time", "score"
-    score_subtype: Optional[str] = None  # For score type: None or "singles"
+    x: int | None = None
+    y: int | None = None
+    width: int | None = None
+    height: int | None = None
+    label: str | None = None
+    ocr_backend: str | None = None
+    region_type: str | None = None  # "generic", "time", "score"
+    score_subtype: str | None = None  # For score type: None or "singles"
 
 
 @app.get("/api/cameras")
@@ -458,8 +458,8 @@ class GlyphRequest(BaseModel):
 
 
 class GlyphUpdateRequest(BaseModel):
-    char: Optional[str] = None
-    ignored: Optional[bool] = None
+    char: str | None = None
+    ignored: bool | None = None
 
 
 @app.get("/api/sessions/{session_id}/glyphs")
@@ -531,7 +531,7 @@ async def clear_glyphs(session_id: str):
 
 
 @app.get("/api/sessions/{session_id}/detect-glyphs")
-async def detect_glyphs(session_id: str, region_id: Optional[str] = None, 
+async def detect_glyphs(session_id: str, region_id: str | None = None, 
                         merge_vertical: bool = False):
     """
     Detect glyphs in the current processed frame for training.
@@ -552,7 +552,7 @@ async def detect_glyphs(session_id: str, region_id: Optional[str] = None,
 
 class CombineGlyphsRequest(BaseModel):
     indices: list[int]
-    region_id: Optional[str] = None
+    region_id: str | None = None
 
 
 @app.post("/api/sessions/{session_id}/combine-glyphs")
@@ -849,7 +849,7 @@ def setup_static_files():
         if os.path.exists(index_path):
             @app.get("/", response_class=HTMLResponse)
             async def serve_index():
-                with open(index_path, 'r') as f:
+                with open(index_path) as f:
                     return f.read()
             
             # Catch-all for SPA routing (must be last)
@@ -858,7 +858,7 @@ def setup_static_files():
                 # Don't catch API routes, streams, websockets, etc.
                 if path.startswith(('api/', 'stream/', 'ws/', 'ocr/', 'debug/')):
                     raise HTTPException(status_code=404)
-                with open(index_path, 'r') as f:
+                with open(index_path) as f:
                     return f.read()
         
         print(f"Static files mounted from: {static_path}")
@@ -939,7 +939,6 @@ def should_use_clean_logs() -> bool:
 
 def configure_logging(clean_logs: bool):
     """Configure logging to optionally disable ANSI color codes."""
-    import logging
     
     if clean_logs:
         # Use a simple formatter without colors
@@ -978,8 +977,8 @@ def configure_logging(clean_logs: bool):
 
 def open_browser(host: str, port: int):
     """Open the default browser to the app URL."""
-    import webbrowser
     import time
+    import webbrowser
     
     def _open():
         time.sleep(1.5)  # Wait for server to start
@@ -998,7 +997,7 @@ class OCRFileWriter:
         self._subscribed_sessions: set[str] = set()
         self._lock = threading.Lock()
         self._running = True
-        self._poll_thread: Optional[threading.Thread] = None
+        self._poll_thread: threading.Thread | None = None
         
         # Create base directory if it doesn't exist
         self.base_path.mkdir(parents=True, exist_ok=True)
@@ -1117,7 +1116,7 @@ if __name__ == "__main__":
     # Setup static files for production
     has_static = setup_static_files()
     
-    print(f"Starting OCR Camera Backend...")
+    print("Starting OCR Camera Backend...")
     print(f"Host: {args.host}")
     print(f"Port: {args.port}")
     print(f"Static files: {'Yes' if has_static else 'No (run frontend dev server separately)'}")

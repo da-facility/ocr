@@ -43,18 +43,29 @@ function hasDetections(regionName) {
 <template>
   <div class="bg-midnight-900/50 backdrop-blur">
     <div class="px-4 py-2 border-b border-midnight-800 flex items-center justify-between">
-      <h3 class="text-xs uppercase tracking-widest text-midnight-500">OCR Results</h3>
-      <span v-if="allRegionNames.length" class="text-xs text-midnight-600">
+      <h3 class="text-xs uppercase tracking-widest text-midnight-500">
+        OCR Results
+      </h3>
+      <span
+        v-if="allRegionNames.length"
+        class="text-xs text-midnight-600"
+      >
         {{ allRegionNames.length }} region{{ allRegionNames.length !== 1 ? 's' : '' }}
       </span>
     </div>
     
     <div class="p-4 min-h-[80px] max-h-[200px] overflow-y-auto">
-      <div v-if="!hasAnyRegions" class="text-midnight-600 text-sm text-center py-4">
+      <div
+        v-if="!hasAnyRegions"
+        class="text-midnight-600 text-sm text-center py-4"
+      >
         No OCR regions defined
       </div>
       
-      <div v-else class="space-y-2">
+      <div
+        v-else
+        class="space-y-2"
+      >
         <!-- Full frame results if no regions -->
         <div 
           v-if="'_full' in results && allRegionNames.length === 0"
@@ -62,11 +73,17 @@ function hasDetections(regionName) {
         >
           <div class="flex items-center justify-between mb-2">
             <span class="text-xs font-mono text-midnight-400">Full Frame</span>
-            <span v-if="getRegionConfidence('_full')" class="text-xs text-midnight-500">
+            <span
+              v-if="getRegionConfidence('_full')"
+              class="text-xs text-midnight-500"
+            >
               {{ getRegionConfidence('_full') }}% avg
             </span>
           </div>
-          <div class="font-mono text-sm leading-relaxed" :class="hasDetections('_full') ? 'text-midnight-200' : 'text-midnight-600 italic'">
+          <div
+            class="font-mono text-sm leading-relaxed"
+            :class="hasDetections('_full') ? 'text-midnight-200' : 'text-midnight-600 italic'"
+          >
             {{ getRegionText('_full') || 'No text detected' }}
           </div>
         </div>
@@ -79,12 +96,21 @@ function hasDetections(regionName) {
         >
           <div class="flex items-center justify-between mb-2">
             <span class="text-xs font-mono text-electric-400">{{ regionName }}</span>
-            <span v-if="getRegionConfidence(regionName)" class="text-xs text-midnight-500">
+            <span
+              v-if="getRegionConfidence(regionName)"
+              class="text-xs text-midnight-500"
+            >
               {{ getRegionConfidence(regionName) }}% avg
             </span>
-            <span v-else class="text-xs text-midnight-600">—</span>
+            <span
+              v-else
+              class="text-xs text-midnight-600"
+            >—</span>
           </div>
-          <div class="font-mono text-sm leading-relaxed" :class="hasDetections(regionName) ? 'text-midnight-200' : 'text-midnight-600 italic'">
+          <div
+            class="font-mono text-sm leading-relaxed"
+            :class="hasDetections(regionName) ? 'text-midnight-200' : 'text-midnight-600 italic'"
+          >
             {{ getRegionText(regionName) || 'No text detected' }}
           </div>
         </div>
