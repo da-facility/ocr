@@ -2,6 +2,7 @@ import cv2
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 import numpy as np
 import platform
@@ -172,6 +173,10 @@ class CameraCapture:
         self.lock = threading.Lock()
         self.running = False
         self.thread: Optional[threading.Thread] = None
+        # Disconnection state tracking
+        self.disconnected = False
+        self.disconnect_time: Optional[float] = None
+        self.last_reconnect_attempt: float = 0
 
     def start(self) -> bool:
         if self.running:
@@ -200,17 +205,63 @@ class CameraCapture:
         while self.running:
             if self.cap is None:
                 break
+
+            if self.disconnected:
+                # Poll for reconnection (1 second interval)
+                if time.time() - self.last_reconnect_attempt >= 1.0:
+                    self.last_reconnect_attempt = time.time()
+                    if self._try_reconnect():
+                        # Log reconnection with timestamp
+                        print(f"[Camera #{self.camera_index}] Reconnected at {datetime.now().isoformat()}")
+                        self.disconnected = False
+                        self.disconnect_time = None
+                time.sleep(0.1)
+                continue
+
             ret, frame = self.cap.read()
-            if ret:
+            if not ret:
+                # Disconnect detected
+                self.disconnected = True
+                self.disconnect_time = time.time()
                 with self.lock:
-                    self.frame = frame
+                    self.frame = None  # Clear frame to freeze downstream consumers
+                print(f"[Camera #{self.camera_index}] Disconnected at {datetime.now().isoformat()}")
+                continue
+
+            with self.lock:
+                self.frame = frame
             time.sleep(0.01)
+
+    def _try_reconnect(self) -> bool:
+        """Attempt to reopen the camera. Returns True on success."""
+        if self.cap:
+            self.cap.release()
+        self.cap = _open_video_capture(self.camera_index)
+        if self.cap.isOpened():
+            # Restore resolution settings
+            _try_set_resolution(
+                self.cap,
+                [
+                    (1920, 1080),
+                    (1280, 720),
+                    (720, 576),
+                    (640, 480),
+                ],
+            )
+            # Test read
+            ret, _ = self.cap.read()
+            return ret
+        return False
 
     def get_frame(self) -> Optional[np.ndarray]:
         with self.lock:
             if self.frame is not None:
                 return self.frame.copy()
             return None
+
+    def is_disconnected(self) -> bool:
+        """Check if camera is currently disconnected."""
+        return self.disconnected
 
     def stop(self):
         self.running = False
@@ -220,6 +271,8 @@ class CameraCapture:
             self.cap.release()
             self.cap = None
         self.frame = None
+        self.disconnected = False
+        self.disconnect_time = None
 
 
 class CameraManager:
