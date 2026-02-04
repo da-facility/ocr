@@ -64,6 +64,7 @@ class OcrRegion:
     ocr_backend: str = "glyphs"  # Only "glyphs" supported
     region_type: str = "generic"  # "generic", "time", or "score"
     score_subtype: Optional[str] = None  # For score type: None or "singles"
+    score_team: Optional[str] = None  # For score type: None, "home", or "away"
     time_format: str = "m:ss"  # For time type: "m:ss" or "mm:ss"
 
     def to_dict(self) -> dict:
@@ -77,6 +78,7 @@ class OcrRegion:
             "ocr_backend": self.ocr_backend,
             "region_type": self.region_type,
             "score_subtype": self.score_subtype,
+            "score_team": self.score_team,
             "time_format": self.time_format
         }
 
@@ -97,6 +99,7 @@ class Session:
     ocr_regions: list[OcrRegion] = field(default_factory=list)
     glyphs: list[Glyph] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
+    output_folder: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -113,7 +116,8 @@ class Session:
             "dilation_kernel": self.dilation_kernel,
             "ocr_regions": [r.to_dict() for r in self.ocr_regions],
             "glyphs": [g.to_dict() for g in self.glyphs],
-            "created_at": self.created_at.isoformat()
+            "created_at": self.created_at.isoformat(),
+            "output_folder": self.output_folder
         }
     
     def get_region_by_name(self, name: str) -> Optional[OcrRegion]:
@@ -167,7 +171,8 @@ class SessionManager:
                     OcrRegion(id=r['id'], x=r['x'], y=r['y'], width=r['width'], height=r['height'], 
                               label=r['label'], ocr_backend='glyphs',
                               region_type=r.get('region_type', 'generic'),
-                              score_subtype=r.get('score_subtype'))
+                              score_subtype=r.get('score_subtype'),
+                              score_team=r.get('score_team'))
                     for r in sdata.get('ocr_regions', [])
                 ]
                 glyphs = [
@@ -195,7 +200,8 @@ class SessionManager:
                     dilation_kernel=sdata.get('dilation_kernel', 0),
                     ocr_regions=ocr_regions,
                     glyphs=glyphs,
-                    created_at=datetime.fromisoformat(sdata['created_at']) if 'created_at' in sdata else datetime.now()
+                    created_at=datetime.fromisoformat(sdata['created_at']) if 'created_at' in sdata else datetime.now(),
+                    output_folder=sdata.get('output_folder')
                 )
                 self.sessions[sid] = session
             
@@ -299,11 +305,23 @@ class SessionManager:
             return True
         return False
 
+    def update_output_folder(self, session_id: str, output_folder: Optional[str]) -> bool:
+        session = self.get_session(session_id)
+        if session:
+            session.output_folder = output_folder
+            self.save_sessions()
+            return True
+        return False
+
     def add_ocr_region(self, session_id: str, x: int, y: int, width: int, height: int, 
                        label: str = "") -> Optional[OcrRegion]:
         session = self.get_session(session_id)
         if session:
             region_id = str(uuid.uuid4())[:8]
+            
+            # Check for reserved name "score" (case-insensitive)
+            if label and label.lower() == "score":
+                return None
             
             if not label:
                 counter = len(session.ocr_regions) + 1
@@ -324,12 +342,16 @@ class SessionManager:
                           x: Optional[int] = None, y: Optional[int] = None,
                           width: Optional[int] = None, height: Optional[int] = None,
                           label: Optional[str] = None, ocr_backend: Optional[str] = None,
-                          region_type: Optional[str] = None, score_subtype: Optional[str] = None) -> bool:
+                          region_type: Optional[str] = None, score_subtype: Optional[str] = None,
+                          score_team: Optional[str] = None) -> bool:
         session = self.get_session(session_id)
         if session:
             for region in session.ocr_regions:
                 if region.id == region_id:
                     if label is not None and label != region.label:
+                        # Check for reserved name "score" (case-insensitive)
+                        if label.lower() == "score":
+                            return False
                         if not session.is_region_name_unique(label, exclude_id=region_id):
                             return False
                         region.label = label
@@ -347,6 +369,8 @@ class SessionManager:
                         region.region_type = region_type
                     if score_subtype is not None:
                         region.score_subtype = score_subtype if score_subtype else None
+                    if score_team is not None:
+                        region.score_team = score_team if score_team else None
                     self.save_sessions()
                     return True
         return False

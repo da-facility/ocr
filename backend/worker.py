@@ -27,6 +27,36 @@ from glyph_storage import glyph_storage_manager
 from validators import ScoreValidator, TimeValidator, GenericValidator
 
 
+def _sanitize_filename(name: str) -> str:
+    """Sanitize a string to be safe for use as a filename on all platforms."""
+    invalid_chars = '<>:"/\\|?*'
+    result = name
+    for char in invalid_chars:
+        result = result.replace(char, '_')
+    result = result.strip('. ')
+    return result or 'unnamed'
+
+
+def _write_output_files(output_folder: str, results: dict):
+    """Write OCR results to files in the specified folder."""
+    try:
+        # Create output folder if it doesn't exist
+        os.makedirs(output_folder, exist_ok=True)
+        
+        for region_name, region_data in results.items():
+            if region_name == '_full':
+                continue
+            
+            text = region_data.get('text', '').strip() if isinstance(region_data, dict) else ''
+            filename = _sanitize_filename(region_name) + '.txt'
+            filepath = os.path.join(output_folder, filename)
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(text)
+    except Exception as e:
+        print(f"[Worker] Error writing output files: {e}")
+
+
 class WorkerState:
     """Shared state for the worker process."""
     
@@ -272,6 +302,9 @@ def register_handlers(server: IPCServer, state: WorkerState):
             "dilation_kernel": updated.dilation_kernel
         }
     
+    def handle_update_output_folder(session_id: str, output_folder: Optional[str] = None):
+        return state.session_manager.update_output_folder(session_id, output_folder)
+    
     def handle_pick_color(session_id: str, x: int, y: int):
         session = state.session_manager.get_session(session_id)
         if session is None:
@@ -307,9 +340,10 @@ def register_handlers(server: IPCServer, state: WorkerState):
                                   x: Optional[int] = None, y: Optional[int] = None,
                                   width: Optional[int] = None, height: Optional[int] = None,
                                   label: Optional[str] = None, ocr_backend: Optional[str] = None,
-                                  region_type: Optional[str] = None, score_subtype: Optional[str] = None):
+                                  region_type: Optional[str] = None, score_subtype: Optional[str] = None,
+                                  score_team: Optional[str] = None):
         return state.session_manager.update_ocr_region(
-            session_id, region_id, x, y, width, height, label, ocr_backend, region_type, score_subtype
+            session_id, region_id, x, y, width, height, label, ocr_backend, region_type, score_subtype, score_team
         )
     
     def handle_delete_ocr_region(session_id: str, region_id: str):
@@ -473,6 +507,9 @@ def register_handlers(server: IPCServer, state: WorkerState):
         region_info = {r.label: r for r in session.ocr_regions}
         
         formatted = {}
+        home_score = None
+        away_score = None
+        
         for region_name, detections in results.items():
             texts = [d['text'] for d in detections]
             raw_text = ' '.join(texts)
@@ -488,6 +525,7 @@ def register_handlers(server: IPCServer, state: WorkerState):
             region = region_info.get(region_name)
             region_type = region.region_type if region else "generic"
             score_subtype = region.score_subtype if region else None
+            score_team = region.score_team if region else None
             region_id = region.id if region else None
             
             # Apply validation based on region type
@@ -501,6 +539,13 @@ def register_handlers(server: IPCServer, state: WorkerState):
                     validated_text = validated_result if validated_result else raw_text
                     extra_data["score_value"] = int(validated_text) if validated_text.isdigit() else None
                     extra_data["singles_mode"] = validator.singles_mode
+                
+                # Track home/away scores for combined value
+                if score_team == "home":
+                    home_score = validated_text
+                elif score_team == "away":
+                    away_score = validated_text
+                    
             elif region_type == "time" and region_id:
                 time_format = region.time_format if region else "m:ss"
                 time_validator = state.get_or_create_time_validator(session_id, region_id, time_format)
@@ -516,6 +561,23 @@ def register_handlers(server: IPCServer, state: WorkerState):
                 "detections": clean_detections,
                 **extra_data
             }
+        
+        # Create combined score if both home and away are defined
+        if home_score is not None and away_score is not None:
+            combined_score = f"{home_score}:{away_score}"
+            formatted["score"] = {
+                "text": combined_score,
+                "raw_text": combined_score,
+                "backend": "computed",
+                "region_type": "score",
+                "detections": [],
+                "home": home_score,
+                "away": away_score
+            }
+        
+        # Write output files if output_folder is configured
+        if session.output_folder:
+            _write_output_files(session.output_folder, formatted)
         
         return formatted
     
@@ -578,6 +640,7 @@ def register_handlers(server: IPCServer, state: WorkerState):
     server.register_handler(Command.DELETE_COLOR_FILTER, handle_delete_color_filter)
     server.register_handler(Command.CLEAR_COLOR_FILTERS, handle_clear_color_filters)
     server.register_handler(Command.UPDATE_MORPHOLOGY, handle_update_morphology)
+    server.register_handler(Command.UPDATE_OUTPUT_FOLDER, handle_update_output_folder)
     server.register_handler(Command.PICK_COLOR, handle_pick_color)
     
     server.register_handler(Command.ADD_OCR_REGION, handle_add_ocr_region)

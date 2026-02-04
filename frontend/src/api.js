@@ -97,6 +97,15 @@ export async function updateMorphology(sessionId, erosionKernel, dilationKernel)
   return res.json()
 }
 
+export async function updateOutputFolder(sessionId, folderPath) {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/output-folder`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ folder_path: folderPath })
+  })
+  return res.json()
+}
+
 export async function pickColor(sessionId, x, y) {
   const res = await fetch(`${API_BASE}/sessions/${sessionId}/pick-color`, {
     method: 'POST',
