@@ -62,7 +62,8 @@ async function loadSession() {
   error.value = null
   try {
     session.value = await getSession(sessionId.value)
-  } catch (e) {
+  } catch (err) {
+    console.error(err)
     error.value = 'Session not found'
   } finally {
     loading.value = false
@@ -264,11 +265,20 @@ watch(sessionId, () => {
     <header class="border-b border-midnight-800 px-6 py-4 flex items-center justify-between bg-midnight-900/50 backdrop-blur flex-shrink-0">
       <div class="flex items-center gap-4">
         <button 
-          @click="goHome"
           class="p-2 text-midnight-500 hover:text-electric-400 hover:bg-midnight-800 rounded-lg transition-colors"
+          @click="goHome"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-            <path fill-rule="evenodd" d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z" clip-rule="evenodd" />
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="h-5 w-5"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+          >
+            <path
+              fill-rule="evenodd"
+              d="M9.707 16.707a1 1 0 01-1.414 0l-6-6a1 1 0 010-1.414l6-6a1 1 0 011.414 1.414L5.414 9H17a1 1 0 110 2H5.414l4.293 4.293a1 1 0 010 1.414z"
+              clip-rule="evenodd"
+            />
           </svg>
         </button>
         <div>
@@ -278,35 +288,56 @@ watch(sessionId, () => {
           </h1>
         </div>
       </div>
-      <div v-if="session" class="text-sm text-midnight-500">
+      <div
+        v-if="session"
+        class="text-sm text-midnight-500"
+      >
         {{ session.camera_name || `Camera ${session.camera_index}` }}
       </div>
     </header>
 
-    <div v-if="loading" class="flex-1 flex items-center justify-center">
-      <div class="text-midnight-500">Loading session...</div>
-    </div>
-
-    <div v-else-if="error" class="flex-1 flex items-center justify-center">
-      <div class="text-center">
-        <div class="text-ember-400 mb-4">{{ error }}</div>
-        <button @click="goHome" class="text-electric-400 hover:underline">Go back home</button>
+    <div
+      v-if="loading"
+      class="flex-1 flex items-center justify-center"
+    >
+      <div class="text-midnight-500">
+        Loading session...
       </div>
     </div>
 
-    <div v-else class="flex-1 flex overflow-hidden">
+    <div
+      v-else-if="error"
+      class="flex-1 flex items-center justify-center"
+    >
+      <div class="text-center">
+        <div class="text-ember-400 mb-4">
+          {{ error }}
+        </div>
+        <button
+          class="text-electric-400 hover:underline"
+          @click="goHome"
+        >
+          Go back home
+        </button>
+      </div>
+    </div>
+
+    <div
+      v-else
+      class="flex-1 flex overflow-hidden"
+    >
       <main class="flex-1 flex flex-col min-w-0 overflow-hidden">
         <nav class="flex border-b border-midnight-800 bg-midnight-900/30 flex-shrink-0">
           <button
             v-for="tab in tabs"
             :key="tab.id"
-            @click="activeTab = tab.id"
             :class="[
               'px-6 py-3 text-sm font-medium transition-colors relative',
               activeTab === tab.id 
                 ? 'text-electric-400' 
                 : 'text-midnight-500 hover:text-midnight-300'
             ]"
+            @click="activeTab = tab.id"
           >
             {{ tab.label }}
             <div 
@@ -317,15 +348,18 @@ watch(sessionId, () => {
         </nav>
 
         <!-- Tab 1: Set Perspective - single original stream -->
-        <div v-if="activeTab === 'perspective'" class="flex-1 relative bg-midnight-950 overflow-hidden min-h-0">
+        <div
+          v-if="activeTab === 'perspective'"
+          class="flex-1 relative bg-midnight-950 overflow-hidden min-h-0"
+        >
           <StreamViewer 
             :src="originalStreamUrl" 
             class="w-full h-full"
           />
           <PerspectiveCanvas
             :points="perspectivePoints"
-            @update:points="handlePerspectiveChange"
             class="absolute inset-0"
+            @update:points="handlePerspectiveChange"
           />
         </div>
 
@@ -384,17 +418,20 @@ watch(sessionId, () => {
         </div>
 
         <!-- Tab 3: Set OCR Regions - processed stream with region overlay -->
-        <div v-if="activeTab === 'ocr'" class="flex-1 relative bg-midnight-950">
+        <div
+          v-if="activeTab === 'ocr'"
+          class="flex-1 relative bg-midnight-950"
+        >
           <StreamViewer 
             :src="processedStreamUrl" 
             class="w-full h-full"
           />
           <OcrRegionCanvas
             :regions="session?.ocr_regions || []"
-            :frameSize="perspectiveSize"
+            :frame-size="perspectiveSize"
+            class="absolute inset-0"
             @add-region="handleAddOcrRegion"
             @update-region="handleUpdateOcrRegion"
-            class="absolute inset-0"
           />
         </div>
       </main>
@@ -411,7 +448,7 @@ watch(sessionId, () => {
         <ColorSettings
           v-if="activeTab === 'colors' && session"
           :session="session"
-          :colorPickerMode="colorPickerMode"
+          :color-picker-mode="colorPickerMode"
           :layout="colorsLayout"
           @toggle-picker="colorPickerMode = !colorPickerMode"
           @toggle-layout="toggleColorsLayout"
@@ -426,7 +463,7 @@ watch(sessionId, () => {
         <OcrRegionSettings
           v-if="activeTab === 'ocr' && session"
           :session="session"
-          :ocrResults="ocrResults"
+          :ocr-results="ocrResults"
           @delete-region="handleDeleteOcrRegion"
           @clear-regions="handleClearOcrRegions"
           @rename-region="handleRenameRegion"

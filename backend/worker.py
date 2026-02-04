@@ -5,26 +5,24 @@ This runs in a separate process from the FastAPI webserver to prevent
 camera/ML operations from blocking HTTP requests.
 """
 import multiprocessing as mp
-from multiprocessing.connection import Connection
-import sys
 import os
+import sys
 import threading
-import time
-from typing import Optional, Callable
-import numpy as np
+from collections.abc import Callable
+from multiprocessing.connection import Connection
 
 # Add parent directory to path for imports when running as subprocess
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from ipc import IPCServer, IPCMessage, IPCResponse, Command
-from camera import camera_manager, CameraManager
-from sessions import session_manager, SessionManager, Glyph
-from processing import process_frame_perspective, process_frame_full, frame_to_jpeg, get_color_at_point
-from ocr import ocr_manager, OCRManager
-from glyphs import get_detected_glyphs_for_training, combine_glyphs_by_indices, GLYPH_SIZE
+from camera import camera_manager
 from glyph_storage import glyph_storage_manager
-from validators import ScoreValidator, TimeValidator, GenericValidator
+from glyphs import GLYPH_SIZE, combine_glyphs_by_indices, get_detected_glyphs_for_training
+from ipc import Command, IPCServer
+from ocr import ocr_manager
+from processing import get_color_at_point, process_frame_full, process_frame_perspective
+from sessions import Glyph, session_manager
+from validators import ScoreValidator, TimeValidator
 
 
 class WorkerState:
@@ -48,7 +46,7 @@ class WorkerState:
         self.time_validators_lock = threading.Lock()
     
     def get_or_create_validator(self, session_id: str, region_id: str, 
-                                 region_type: str, score_subtype: Optional[str]) -> Optional[ScoreValidator]:
+                                 region_type: str, score_subtype: str | None) -> ScoreValidator | None:
         """Get or create a validator for a region."""
         if region_type != "score":
             return None
@@ -182,8 +180,8 @@ def register_handlers(server: IPCServer, state: WorkerState):
         camera_index: int,
         camera_name: str = "",
         camera_device_name: str = "",
-        camera_vid: Optional[int] = None,
-        camera_pid: Optional[int] = None,
+        camera_vid: int | None = None,
+        camera_pid: int | None = None,
     ):
         camera = state.camera_manager.acquire_camera(camera_index)
         if camera is None:
@@ -221,8 +219,8 @@ def register_handlers(server: IPCServer, state: WorkerState):
         print(f"[Worker] LIST_SESSIONS returning {len(sessions)} sessions")
         return [s.to_dict() for s in sessions]
     
-    def handle_update_perspective(session_id: str, points: Optional[list] = None, 
-                                   output_size: Optional[list] = None):
+    def handle_update_perspective(session_id: str, points: list | None = None, 
+                                   output_size: list | None = None):
         session = state.session_manager.get_session(session_id)
         if session is None:
             return None
@@ -258,8 +256,8 @@ def register_handlers(server: IPCServer, state: WorkerState):
     def handle_clear_color_filters(session_id: str):
         return state.session_manager.clear_color_filters(session_id)
     
-    def handle_update_morphology(session_id: str, erosion_kernel: Optional[int] = None,
-                                  dilation_kernel: Optional[int] = None):
+    def handle_update_morphology(session_id: str, erosion_kernel: int | None = None,
+                                  dilation_kernel: int | None = None):
         session = state.session_manager.get_session(session_id)
         if session is None:
             return None
@@ -304,10 +302,10 @@ def register_handlers(server: IPCServer, state: WorkerState):
         return region.to_dict()
     
     def handle_update_ocr_region(session_id: str, region_id: str, 
-                                  x: Optional[int] = None, y: Optional[int] = None,
-                                  width: Optional[int] = None, height: Optional[int] = None,
-                                  label: Optional[str] = None, ocr_backend: Optional[str] = None,
-                                  region_type: Optional[str] = None, score_subtype: Optional[str] = None):
+                                  x: int | None = None, y: int | None = None,
+                                  width: int | None = None, height: int | None = None,
+                                  label: str | None = None, ocr_backend: str | None = None,
+                                  region_type: str | None = None, score_subtype: str | None = None):
         return state.session_manager.update_ocr_region(
             session_id, region_id, x, y, width, height, label, ocr_backend, region_type, score_subtype
         )
@@ -336,8 +334,8 @@ def register_handlers(server: IPCServer, state: WorkerState):
             return None
         return glyph.to_dict()
     
-    def handle_update_glyph(session_id: str, glyph_id: str, char: Optional[str] = None,
-                            ignored: Optional[bool] = None):
+    def handle_update_glyph(session_id: str, glyph_id: str, char: str | None = None,
+                            ignored: bool | None = None):
         return state.session_manager.update_glyph(session_id, glyph_id, char, ignored)
     
     def handle_delete_glyph(session_id: str, glyph_id: str):
@@ -346,7 +344,7 @@ def register_handlers(server: IPCServer, state: WorkerState):
     def handle_clear_glyphs(session_id: str):
         return state.session_manager.clear_glyphs(session_id)
     
-    def handle_detect_glyphs(session_id: str, region_id: Optional[str] = None,
+    def handle_detect_glyphs(session_id: str, region_id: str | None = None,
                               merge_vertical: bool = False):
         session = state.session_manager.get_session(session_id)
         if session is None:
@@ -387,7 +385,7 @@ def register_handlers(server: IPCServer, state: WorkerState):
             "merge_vertical": merge_vertical
         }
     
-    def handle_combine_glyphs(session_id: str, indices: list, region_id: Optional[str] = None):
+    def handle_combine_glyphs(session_id: str, indices: list, region_id: str | None = None):
         session = state.session_manager.get_session(session_id)
         if session is None:
             return None
@@ -638,7 +636,10 @@ def worker_main(conn: Connection):
             start_session_ocr(state, session)
             print(f"[Worker] Restored session {session.id} with camera {resolved_index}")
         else:
-            print(f"[Worker] Failed to restore session {session.id}: camera not available (VID:{session.camera_vid}, PID:{session.camera_pid})")
+            print(
+                f"[Worker] Failed to restore session {session.id}: camera not available "
+                f"(VID:{session.camera_vid}, PID:{session.camera_pid})"
+            )
     
     # Create and configure IPC server
     server = IPCServer(conn)
@@ -675,7 +676,6 @@ def start_worker_process() -> tuple[mp.Process, Connection]:
 
 if __name__ == "__main__":
     # For testing: run worker directly with stdin/stdout IPC
-    import pickle
     
     # Create a simple pipe simulation for testing
     parent_conn, child_conn = mp.Pipe()

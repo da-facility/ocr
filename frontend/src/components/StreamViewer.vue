@@ -2,7 +2,10 @@
 import { ref, watch } from 'vue'
 
 const props = defineProps({
-  src: String
+  src: {
+    type: String,
+    default: ''
+  }
 })
 
 const loaded = ref(false)
@@ -41,21 +44,25 @@ watch(() => props.src, () => {
       class="absolute inset-0 flex items-center justify-center"
     >
       <div class="text-center">
-        <div class="text-6xl text-midnight-800 mb-4">◎</div>
-        <div class="text-midnight-500">Stream unavailable</div>
+        <div class="text-6xl text-midnight-800 mb-4">
+          ◎
+        </div>
+        <div class="text-midnight-500">
+          Stream unavailable
+        </div>
       </div>
     </div>
 
     <img
       v-if="src"
       :src="src"
-      @load="handleLoad"
-      @error="handleError"
       :class="[
         'max-w-full max-h-full w-auto h-auto object-contain transition-opacity duration-300',
         loaded ? 'opacity-100' : 'opacity-0'
       ]"
       alt="Camera stream"
-    />
+      @load="handleLoad"
+      @error="handleError"
+    >
   </div>
 </template>

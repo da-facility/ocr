@@ -4,7 +4,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 OUTPUT_DIR = PROJECT_ROOT / "debug" / "pngs"
 
@@ -12,8 +11,7 @@ OUTPUT_DIR = PROJECT_ROOT / "debug" / "pngs"
 def run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         check=False,
     )

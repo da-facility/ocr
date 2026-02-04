@@ -1,13 +1,14 @@
-import threading
-import time
 import os
 import sys
-from typing import Optional, Callable
-import numpy as np
+import threading
+import time
+from collections.abc import Callable
+from typing import Optional
+
 import cv2
+import numpy as np
 
-from glyphs import recognize_with_glyphs, glyphs_to_text
-
+from glyphs import glyphs_to_text, recognize_with_glyphs
 
 DEBUG_DIR = "./debug"
 
@@ -57,7 +58,7 @@ class OCREngine:
 
     def read_text(self, frame: np.ndarray, backend: str = "glyphs", 
                   session_id: str = "", region_name: str = "",
-                  glyph_templates: Optional[list[dict]] = None) -> list[dict]:
+                  glyph_templates: list[dict] | None = None) -> list[dict]:
         """
         Run OCR on a frame and return detected text.
         Input should be a binary image (black #000000 and white #ffffff).
@@ -92,7 +93,7 @@ class OCREngine:
 
 class OCRWorker:
     def __init__(self, session_id: str, 
-                 get_frame_fn: Callable[[], Optional[np.ndarray]],
+                 get_frame_fn: Callable[[], np.ndarray | None],
                  get_regions_fn: Callable[[], list[dict]],
                  get_glyphs_fn: Callable[[], list[dict]],
                  on_result: Callable[[str, dict[str, list[dict]]], None]):
@@ -102,7 +103,7 @@ class OCRWorker:
         self.get_glyphs_fn = get_glyphs_fn
         self.on_result = on_result
         self.running = False
-        self.thread: Optional[threading.Thread] = None
+        self.thread: threading.Thread | None = None
         self.ocr_engine = OCREngine()
         self.fps_limit = 2.0
 
@@ -177,7 +178,7 @@ class OCRManager:
         self.lock = threading.Lock()
 
     def start_ocr(self, session_id: str, 
-                  get_frame_fn: Callable[[], Optional[np.ndarray]],
+                  get_frame_fn: Callable[[], np.ndarray | None],
                   get_regions_fn: Callable[[], list[dict]],
                   get_glyphs_fn: Callable[[], list[dict]]):
         with self.lock:
@@ -223,12 +224,12 @@ class OCRManager:
         with self.lock:
             return self.latest_results.get(session_id, {}).copy()
 
-    def get_region_result(self, session_id: str, region_name: str) -> Optional[list[dict]]:
+    def get_region_result(self, session_id: str, region_name: str) -> list[dict] | None:
         with self.lock:
             results = self.latest_results.get(session_id, {})
             return results.get(region_name)
 
-    def get_region_text(self, session_id: str, region_name: str) -> Optional[str]:
+    def get_region_text(self, session_id: str, region_name: str) -> str | None:
         results = self.get_region_result(session_id, region_name)
         if results is None:
             return None

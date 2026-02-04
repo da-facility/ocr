@@ -11,8 +11,7 @@ if platform.system() != "Darwin":
 
 try:
     import AVFoundation
-    import objc
-    from Foundation import NSRunLoop, NSDate
+    from Foundation import NSDate, NSRunLoop
 except ImportError:
     print("PyObjC not installed. Run: pip install pyobjc-framework-AVFoundation")
     exit(1)

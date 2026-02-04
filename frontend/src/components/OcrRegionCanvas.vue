@@ -246,16 +246,22 @@ onUnmounted(() => {
     <svg class="w-full h-full pointer-events-none">
       <defs>
         <filter id="regionGlow">
-          <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+          <feGaussianBlur
+            stdDeviation="2"
+            result="coloredBlur"
+          />
           <feMerge>
-            <feMergeNode in="coloredBlur"/>
-            <feMergeNode in="SourceGraphic"/>
+            <feMergeNode in="coloredBlur" />
+            <feMergeNode in="SourceGraphic" />
           </feMerge>
         </filter>
       </defs>
 
       <!-- Existing regions -->
-      <g v-for="(region, index) in localRegions" :key="region.id">
+      <g
+        v-for="(region, index) in localRegions"
+        :key="region.id"
+      >
         <rect
           :x="toDisplayCoords(region.x, region.y).x"
           :y="toDisplayCoords(region.x, region.y).y"
@@ -292,6 +298,5 @@ onUnmounted(() => {
         stroke-dasharray="6 3"
       />
     </svg>
-
   </div>
 </template>
