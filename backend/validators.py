@@ -70,7 +70,22 @@ class TimeValidator:
     it may be absent. In this case:
     - Take the last 2 digits as seconds
     - Everything before is minutes
+    
+    Stateful: tracks the last stable result and returns it when "?" is detected
+    in the input (indicating OCR uncertainty).
+    
+    Format options:
+    - "m:ss" - single digit minutes (e.g., "1:23")
+    - "mm:ss" - zero-padded minutes (e.g., "01:23")
     """
+    
+    def __init__(self, time_format: str = "m:ss"):
+        self.last_stable_result: Optional[dict] = None
+        self.time_format = time_format  # "m:ss" or "mm:ss"
+    
+    def set_format(self, time_format: str):
+        """Set the time format ("m:ss" or "mm:ss")."""
+        self.time_format = time_format
     
     def validate(self, text: str) -> dict:
         """
@@ -87,36 +102,58 @@ class TimeValidator:
                 "centiseconds": int,  # hundredths of a second (0-99)
                 "raw": str,  # cleaned input
                 "formatted": str,  # formatted output like "12:34" or "10.45"
-                "total_seconds": float  # total time in seconds
+                "total_seconds": float,  # total time in seconds
+                "is_stable": bool  # True if fresh reading, False if cached due to "?"
             }
         """
         if not text:
-            return self._empty_result()
+            return self._empty_result(is_stable=True)
+        
+        # Check for "?" indicating OCR uncertainty - return last stable result
+        if '?' in text:
+            if self.last_stable_result:
+                return {**self.last_stable_result, "is_stable": False}
+            return self._empty_result(is_stable=False)
         
         # Clean the text: keep only digits, colons, and periods
         cleaned = ''.join(c for c in text if c.isdigit() or c in ':.')
         if not cleaned:
-            return self._empty_result()
+            return self._empty_result(is_stable=True)
         
         # Check for period (SS.ms format)
         if '.' in cleaned:
-            return self._parse_seconds_millis(cleaned)
-        
+            result = self._parse_seconds_millis(cleaned)
         # Check for colon (MM:SS format)
-        if ':' in cleaned:
-            return self._parse_minutes_seconds_with_colon(cleaned)
+        elif ':' in cleaned:
+            result = self._parse_minutes_seconds_with_colon(cleaned)
+        else:
+            # No separator - assume vanishing colon (MMSS format)
+            result = self._parse_minutes_seconds_no_colon(cleaned)
         
-        # No separator - assume vanishing colon (MMSS format)
-        return self._parse_minutes_seconds_no_colon(cleaned)
+        # Store as last stable result and mark as stable
+        result["is_stable"] = True
+        self.last_stable_result = result
+        return result
     
-    def _empty_result(self) -> dict:
+    def reset(self):
+        """Reset the validator state, clearing the last stable result."""
+        self.last_stable_result = None
+    
+    def _format_minutes(self, minutes: int) -> str:
+        """Format minutes according to the time_format setting."""
+        if self.time_format == "mm:ss":
+            return f"{minutes:02d}"
+        return str(minutes)
+    
+    def _empty_result(self, is_stable: bool = True) -> dict:
         return {
             "minutes": 0,
             "seconds": 0,
             "centiseconds": 0,
             "raw": "",
-            "formatted": "0:00",
-            "total_seconds": 0.0
+            "formatted": f"{self._format_minutes(0)}:00",
+            "total_seconds": 0.0,
+            "is_stable": is_stable
         }
     
     def _parse_minutes_seconds_with_colon(self, text: str) -> dict:
@@ -141,7 +178,7 @@ class TimeValidator:
                 "seconds": seconds,
                 "centiseconds": 0,
                 "raw": text,
-                "formatted": f"{minutes}:{seconds:02d}",
+                "formatted": f"{self._format_minutes(minutes)}:{seconds:02d}",
                 "total_seconds": float(total)
             }
         except ValueError:
@@ -175,7 +212,7 @@ class TimeValidator:
                 "seconds": seconds,
                 "centiseconds": 0,
                 "raw": text,
-                "formatted": f"{minutes}:{seconds:02d}",
+                "formatted": f"{self._format_minutes(minutes)}:{seconds:02d}",
                 "total_seconds": float(total)
             }
         except ValueError:
@@ -204,7 +241,7 @@ class TimeValidator:
             display_seconds = seconds % 60
             
             if minutes > 0:
-                formatted = f"{minutes}:{display_seconds:02d}.{centiseconds:02d}"
+                formatted = f"{self._format_minutes(minutes)}:{display_seconds:02d}.{centiseconds:02d}"
             else:
                 formatted = f"{display_seconds}.{centiseconds:02d}"
             

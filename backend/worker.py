@@ -39,9 +39,13 @@ class WorkerState:
         self.ocr_callbacks: dict[str, list[Callable]] = {}
         self.ocr_lock = threading.Lock()
         
-        # Validators per region: {session_id: {region_id: validator}}
+        # Score validators per region: {session_id: {region_id: validator}}
         self.validators: dict[str, dict[str, ScoreValidator]] = {}
         self.validators_lock = threading.Lock()
+        
+        # Time validators per region: {session_id: {region_id: validator}}
+        self.time_validators: dict[str, dict[str, TimeValidator]] = {}
+        self.time_validators_lock = threading.Lock()
     
     def get_or_create_validator(self, session_id: str, region_id: str, 
                                  region_type: str, score_subtype: Optional[str]) -> Optional[ScoreValidator]:
@@ -75,6 +79,35 @@ class WorkerState:
         """Remove all validators for a session."""
         with self.validators_lock:
             self.validators.pop(session_id, None)
+    
+    def get_or_create_time_validator(self, session_id: str, region_id: str, 
+                                       time_format: str = "m:ss") -> TimeValidator:
+        """Get or create a time validator for a region."""
+        with self.time_validators_lock:
+            if session_id not in self.time_validators:
+                self.time_validators[session_id] = {}
+            
+            if region_id not in self.time_validators[session_id]:
+                self.time_validators[session_id][region_id] = TimeValidator(time_format=time_format)
+            else:
+                # Update time format if it changed
+                validator = self.time_validators[session_id][region_id]
+                validator.set_format(time_format)
+            
+            return self.time_validators[session_id][region_id]
+    
+    def reset_time_validator(self, session_id: str, region_id: str) -> bool:
+        """Reset a time validator's state."""
+        with self.time_validators_lock:
+            if session_id in self.time_validators and region_id in self.time_validators[session_id]:
+                self.time_validators[session_id][region_id].reset()
+                return True
+        return False
+    
+    def remove_session_time_validators(self, session_id: str):
+        """Remove all time validators for a session."""
+        with self.time_validators_lock:
+            self.time_validators.pop(session_id, None)
 
 
 def start_session_ocr(state: WorkerState, session):
@@ -439,8 +472,6 @@ def register_handlers(server: IPCServer, state: WorkerState):
         # Build lookup for region info
         region_info = {r.label: r for r in session.ocr_regions}
         
-        time_validator = TimeValidator()
-        
         formatted = {}
         for region_name, detections in results.items():
             texts = [d['text'] for d in detections]
@@ -470,7 +501,9 @@ def register_handlers(server: IPCServer, state: WorkerState):
                     validated_text = validated_result if validated_result else raw_text
                     extra_data["score_value"] = int(validated_text) if validated_text.isdigit() else None
                     extra_data["singles_mode"] = validator.singles_mode
-            elif region_type == "time":
+            elif region_type == "time" and region_id:
+                time_format = region.time_format if region else "m:ss"
+                time_validator = state.get_or_create_time_validator(session_id, region_id, time_format)
                 time_result = time_validator.validate(raw_text)
                 validated_text = time_result["formatted"]
                 extra_data["time"] = time_result

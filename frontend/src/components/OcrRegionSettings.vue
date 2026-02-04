@@ -279,6 +279,16 @@ async function handleScoreSubtypeChange(regionId, subtype) {
   }
 }
 
+async function handleTimeFormatChange(regionId, format) {
+  if (!props.session) return
+  try {
+    await updateOcrRegion(props.session.id, regionId, { time_format: format })
+    emit('region-updated')
+  } catch (e) {
+    console.error('Failed to update time format:', e)
+  }
+}
+
 async function handleResetValidator(regionId) {
   if (!props.session) return
   try {
@@ -428,6 +438,18 @@ function templateToDataUrl(template) {
               >
                 Reset
               </button>
+            </template>
+
+            <!-- Time format selector -->
+            <template v-if="region.region_type === 'time'">
+              <select
+                :value="region.time_format || 'm:ss'"
+                @change="(e) => handleTimeFormatChange(region.id, e.target.value)"
+                class="bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
+              >
+                <option value="m:ss">m:ss</option>
+                <option value="mm:ss">mm:ss</option>
+              </select>
             </template>
           </div>
 

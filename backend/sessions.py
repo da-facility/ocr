@@ -64,6 +64,7 @@ class OcrRegion:
     ocr_backend: str = "glyphs"  # Only "glyphs" supported
     region_type: str = "generic"  # "generic", "time", or "score"
     score_subtype: Optional[str] = None  # For score type: None or "singles"
+    time_format: str = "m:ss"  # For time type: "m:ss" or "mm:ss"
 
     def to_dict(self) -> dict:
         return {
@@ -75,7 +76,8 @@ class OcrRegion:
             "label": self.label,
             "ocr_backend": self.ocr_backend,
             "region_type": self.region_type,
-            "score_subtype": self.score_subtype
+            "score_subtype": self.score_subtype,
+            "time_format": self.time_format
         }
 
 
