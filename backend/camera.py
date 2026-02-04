@@ -52,16 +52,24 @@ class CameraEnumerator:
 
     def _enumerate(self) -> list[CameraInfo]:
         """Perform actual enumeration (called when cache is stale)."""
+        backend_name = "DSHOW" if _CAMERA_BACKEND else "ANY"
+        print(f"[Camera] Enumerating (backend: {backend_name})...")
+
         cameras = enumerate_cameras(_CAMERA_BACKEND) if _CAMERA_BACKEND else enumerate_cameras()
         result = []
         for info in cameras:
             name = info.name or f"Camera {info.index + 1:02d}"
+            vid = f"{info.vid:04x}" if info.vid else "None"
+            pid = f"{info.pid:04x}" if info.pid else "None"
+            print(f"[Camera]   #{info.index}: {name} (VID:{vid} PID:{pid})")
             result.append(CameraInfo(
                 index=info.index,
                 name=name,
                 vid=info.vid,
                 pid=info.pid,
             ))
+
+        print(f"[Camera] Found {len(result)} cameras")
         return result
 
     def list_cameras(self, force_refresh: bool = False) -> list[CameraInfo]:

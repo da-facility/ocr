@@ -8,10 +8,10 @@ import uuid
 import json
 import os
 
-from sessions import Glyph, session_manager
+from sessions import Glyph, session_manager, get_data_path
 
 
-GLYPHS_FILE = "./glyph_sets.json"
+GLYPHS_FILE = os.path.join(get_data_path(), "glyph_sets.json")
 
 
 @dataclass
@@ -50,7 +50,10 @@ class GlyphStorageManager:
     def load_glyph_sets(self):
         """Load glyph sets from JSON file."""
         if not os.path.exists(GLYPHS_FILE):
+            print(f"[GlyphSets] No glyph sets file at: {GLYPHS_FILE}")
             return
+
+        print(f"[GlyphSets] Loading from: {GLYPHS_FILE}")
         
         try:
             with open(GLYPHS_FILE, 'r') as f:
@@ -77,7 +80,7 @@ class GlyphStorageManager:
                 )
                 self.glyph_sets[set_id] = glyph_set
             
-            print(f"Loaded {len(self.glyph_sets)} glyph sets from {GLYPHS_FILE}")
+            print(f"[GlyphSets] Loaded {len(self.glyph_sets)} glyph sets")
         except Exception as e:
             print(f"Failed to load glyph sets: {e}")
     

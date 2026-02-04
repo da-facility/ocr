@@ -265,12 +265,14 @@ class IPCServer:
         """Handle an incoming message and return response."""
         handler = self.handlers.get(msg.command)
         if handler is None:
+            print(f"[IPC] Unknown command: {msg.command} (type: {type(msg.command)})")
+            print(f"[IPC] Registered commands: {list(self.handlers.keys())}")
             return IPCResponse(
-                success=False, 
+                success=False,
                 error=f"Unknown command: {msg.command}",
                 request_id=msg.request_id
             )
-        
+
         try:
             result = handler(**msg.args)
             return IPCResponse(success=True, data=result, request_id=msg.request_id)

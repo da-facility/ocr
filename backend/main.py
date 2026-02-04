@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -104,15 +104,19 @@ async def lifespan(app: FastAPI):
     # Startup
     print("Starting OCR Camera Backend...")
     ensure_worker_running()
-    
+
     # Register cleanup
     atexit.register(shutdown_worker)
-    
-    yield  # App is running
-    
-    # Shutdown
-    print("Shutting down OCR Camera Backend...")
-    shutdown_worker()
+
+    try:
+        yield  # App is running
+    except asyncio.CancelledError:
+        # Normal during Ctrl+C shutdown
+        pass
+    finally:
+        # Shutdown
+        print("Shutting down OCR Camera Backend...")
+        shutdown_worker()
 
 
 app = FastAPI(title="OCR Camera Backend", lifespan=lifespan)
@@ -124,6 +128,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all HTTP requests with timing."""
+    start = time.time()
+    response = await call_next(request)
+    duration = (time.time() - start) * 1000
+    # Skip logging for stream endpoints (too noisy)
+    if not request.url.path.startswith("/stream/"):
+        print(f"[{request.method}] {request.url.path} -> {response.status_code} ({duration:.0f}ms)")
+    return response
 
 
 class CreateSessionRequest(BaseModel):
@@ -184,6 +200,7 @@ async def list_cameras(refresh: bool = False):
     response = client.send_command(Command.LIST_CAMERAS, force_refresh=refresh, timeout=5.0)
     if not response.success:
         raise HTTPException(status_code=500, detail=response.error or "Failed to list cameras")
+    print(f"[API] /api/cameras returning {len(response.data) if response.data else 0} cameras")
     return {"cameras": response.data}
 
 
@@ -204,6 +221,7 @@ async def list_sessions():
     response = client.send_command(Command.LIST_SESSIONS)
     if not response.success:
         raise HTTPException(status_code=500, detail=response.error or "Failed to list sessions")
+    print(f"[API] /api/sessions returning {len(response.data) if response.data else 0} sessions")
     return {"sessions": response.data}
 
 
@@ -1113,5 +1131,8 @@ if __name__ == "__main__":
     # Open browser if static files available and not disabled
     if has_static and not args.no_browser:
         open_browser(args.host, args.port)
-    
-    uvicorn.run(app, host=args.host, port=args.port, log_config=log_config)
+
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_config=log_config)
+    except KeyboardInterrupt:
+        pass  # Clean exit on Ctrl+C

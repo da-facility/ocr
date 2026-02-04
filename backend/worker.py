@@ -119,7 +119,9 @@ def register_handlers(server: IPCServer, state: WorkerState):
     # ============= Camera handlers =============
 
     def handle_list_cameras(force_refresh: bool = False):
-        return state.camera_manager.list_available_cameras(force_refresh=force_refresh)
+        cameras = state.camera_manager.list_available_cameras(force_refresh=force_refresh)
+        print(f"[Worker] LIST_CAMERAS returning {len(cameras)} cameras")
+        return cameras
 
     def handle_refresh_cameras():
         return state.camera_manager.refresh_cameras()
@@ -183,6 +185,7 @@ def register_handlers(server: IPCServer, state: WorkerState):
     
     def handle_list_sessions():
         sessions = state.session_manager.list_sessions()
+        print(f"[Worker] LIST_SESSIONS returning {len(sessions)} sessions")
         return [s.to_dict() for s in sessions]
     
     def handle_update_perspective(session_id: str, points: Optional[list] = None, 

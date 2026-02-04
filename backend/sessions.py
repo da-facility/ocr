@@ -4,6 +4,16 @@ from typing import Optional
 import uuid
 import json
 import os
+import sys
+
+
+def get_data_path() -> str:
+    """Get directory for user data files (sessions, glyphs, etc.)."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled exe - use exe's directory
+        return os.path.dirname(sys.executable)
+    # Running as script - use current working directory
+    return os.getcwd()
 
 
 @dataclass
@@ -117,7 +127,7 @@ class Session:
         return True
 
 
-SESSIONS_FILE = "./sessions.json"
+SESSIONS_FILE = os.path.join(get_data_path(), "sessions.json")
 
 
 class SessionManager:
@@ -137,7 +147,10 @@ class SessionManager:
     def load_sessions(self):
         """Load sessions from JSON file."""
         if not os.path.exists(SESSIONS_FILE):
+            print(f"[Sessions] No session file at: {SESSIONS_FILE}")
             return
+
+        print(f"[Sessions] Loading from: {SESSIONS_FILE}")
         
         try:
             with open(SESSIONS_FILE, 'r') as f:
@@ -184,7 +197,7 @@ class SessionManager:
                 )
                 self.sessions[sid] = session
             
-            print(f"Loaded {len(self.sessions)} sessions from {SESSIONS_FILE}")
+            print(f"[Sessions] Loaded {len(self.sessions)} sessions")
         except Exception as e:
             print(f"Failed to load sessions: {e}")
 
