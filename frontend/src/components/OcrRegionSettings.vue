@@ -60,20 +60,21 @@ function cancelEdit() {
 }
 
 function getRegionText(regionName) {
-  const detections = props.ocrResults[regionName] || []
-  return detections.map(d => d.text).join(' ')
+  const result = props.ocrResults[regionName]
+  if (!result) return ''
+  return result.text || ''
 }
 
 function getRegionConfidence(regionName) {
-  const detections = props.ocrResults[regionName] || []
-  if (detections.length === 0) return null
-  const avg = detections.reduce((sum, d) => sum + d.confidence, 0) / detections.length
+  const result = props.ocrResults[regionName]
+  if (!result || !Array.isArray(result.detections) || result.detections.length === 0) return null
+  const avg = result.detections.reduce((sum, d) => sum + d.confidence, 0) / result.detections.length
   return Math.round(avg * 100)
 }
 
 function hasDetections(regionName) {
-  const detections = props.ocrResults[regionName] || []
-  return detections.length > 0
+  const result = props.ocrResults[regionName]
+  return result && Array.isArray(result.detections) && result.detections.length > 0
 }
 
 const allRegionNames = computed(() => {
@@ -570,22 +571,22 @@ function templateToDataUrl(template) {
         </p>
 
         <div class="grid grid-cols-4 gap-2">
-          <div 
-            v-for="glyph in detectedGlyphs" 
+          <div
+            v-for="glyph in detectedGlyphs"
             :key="glyph.index"
             @click="toggleGlyphSelection(glyph.index)"
-            class="rounded p-2 text-center cursor-pointer transition-all"
-            :class="isGlyphSelected(glyph.index) 
-              ? 'bg-electric-500/20 border-2 border-electric-500' 
+            class="flex flex-col rounded p-2 text-center cursor-pointer transition-all"
+            :class="isGlyphSelected(glyph.index)
+              ? 'bg-electric-500/20 border-2 border-electric-500'
               : 'bg-midnight-800 border-2 border-transparent hover:border-midnight-600'"
           >
-            <img 
-              :src="templateToDataUrl(glyph.template)" 
-              class="w-8 h-12 mx-auto mb-1 object-contain bg-white rounded"
+            <img
+              :src="templateToDataUrl(glyph.template)"
+              class="w-8 h-12 mx-auto object-contain bg-white rounded"
               style="image-rendering: pixelated;"
             />
-            <div v-if="glyph.merged_count > 1" class="text-[10px] text-midnight-500 mb-1">
-              (merged: {{ glyph.merged_count }})
+            <div class="text-[10px] text-midnight-500 h-4 flex items-center justify-center">
+              <span v-if="glyph.merged_count > 1">(merged: {{ glyph.merged_count }})</span>
             </div>
             <input
               v-model="glyphLabels[glyph.index]"
@@ -599,13 +600,13 @@ function templateToDataUrl(template) {
               <button
                 @click.stop="handleSaveGlyph(glyph)"
                 :disabled="!glyphLabels[glyph.index]"
-                class="flex-1 px-2 py-0.5 bg-electric-500/20 hover:bg-electric-500/30 disabled:bg-midnight-700/50 text-electric-400 disabled:text-midnight-600 text-xs rounded"
+                class="flex-1 px-1 py-0.5 bg-electric-500/20 hover:bg-electric-500/30 disabled:bg-midnight-700/50 text-electric-400 disabled:text-midnight-600 text-xs rounded"
               >
                 Save
               </button>
               <button
                 @click.stop="handleIgnoreGlyph(glyph)"
-                class="px-2 py-0.5 bg-midnight-700 hover:bg-midnight-600 text-midnight-400 text-xs rounded"
+                class="px-1 py-0.5 bg-midnight-700 hover:bg-midnight-600 text-midnight-400 text-xs rounded"
                 title="Ignore this glyph"
               >
                 Ign

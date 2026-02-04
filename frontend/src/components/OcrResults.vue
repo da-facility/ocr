@@ -22,20 +22,21 @@ const allRegionNames = computed(() => {
 const hasAnyRegions = computed(() => allRegionNames.value.length > 0 || '_full' in props.results)
 
 function getRegionText(regionName) {
-  const detections = props.results[regionName] || []
-  return detections.map(d => d.text).join(' ')
+  const result = props.results[regionName]
+  if (!result) return ''
+  return result.text || ''
 }
 
 function getRegionConfidence(regionName) {
-  const detections = props.results[regionName] || []
-  if (detections.length === 0) return null
-  const avg = detections.reduce((sum, d) => sum + d.confidence, 0) / detections.length
+  const result = props.results[regionName]
+  if (!result || !Array.isArray(result.detections) || result.detections.length === 0) return null
+  const avg = result.detections.reduce((sum, d) => sum + d.confidence, 0) / result.detections.length
   return Math.round(avg * 100)
 }
 
 function hasDetections(regionName) {
-  const detections = props.results[regionName] || []
-  return detections.length > 0
+  const result = props.results[regionName]
+  return result && Array.isArray(result.detections) && result.detections.length > 0
 }
 </script>
 
