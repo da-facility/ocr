@@ -1,7 +1,15 @@
 {
   "permissions": {
     "allow": [
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(find:*)",
+      "Bash(uv run python:*)",
+      "Bash(mise exec -- uv run python:*)",
+      "Bash(mise trust:*)",
+      "Bash(mise exec:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(bun run build)"
     ]
   }
 }
