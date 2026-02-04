@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { 
   detectGlyphs, addGlyph, updateGlyph, deleteGlyph, clearGlyphs, combineGlyphs,
   listGlyphSets, exportGlyphs, importGlyphs, deleteGlyphSet,
-  updateOcrRegion, resetRegionValidator
+  updateOcrRegion, resetRegionValidator, updateOutputFolder
 } from '../api'
 
 const props = defineProps({
@@ -47,8 +47,14 @@ function startEditing(region) {
 }
 
 function saveEdit(regionId) {
-  if (editingName.value.trim()) {
-    emit('rename-region', regionId, editingName.value.trim())
+  const name = editingName.value.trim()
+  if (name) {
+    // Reject reserved name "score" (case-insensitive)
+    if (name.toLowerCase() === 'score') {
+      alert('The name "score" is reserved for the combined home:away score.')
+      return
+    }
+    emit('rename-region', regionId, name)
   }
   editingId.value = null
   editingName.value = ''
@@ -298,6 +304,26 @@ async function handleResetValidator(regionId) {
   }
 }
 
+async function handleScoreTeamChange(regionId, team) {
+  if (!props.session) return
+  try {
+    await updateOcrRegion(props.session.id, regionId, { score_team: team || '' })
+    emit('region-updated')
+  } catch (e) {
+    console.error('Failed to update score team:', e)
+  }
+}
+
+async function handleOutputFolderChange(folderPath) {
+  if (!props.session) return
+  try {
+    await updateOutputFolder(props.session.id, folderPath || null)
+    emit('region-updated')
+  } catch (e) {
+    console.error('Failed to update output folder:', e)
+  }
+}
+
 function getResultText(regionName) {
   const result = props.ocrResults[regionName]
   if (!result) return null
@@ -405,51 +431,72 @@ function templateToDataUrl(template) {
             {{ region.x }}, {{ region.y }} — {{ region.width }}×{{ region.height }}
           </div>
 
-          <!-- Type selector -->
-          <div class="mt-2 flex items-center gap-2">
-            <span class="text-xs text-midnight-500">Type:</span>
-            <select
-              :value="region.region_type || 'generic'"
-              @change="(e) => handleRegionTypeChange(region.id, e.target.value)"
-              class="bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
-            >
-              <option value="generic">Generic</option>
-              <option value="time">Time</option>
-              <option value="score">Score</option>
-            </select>
-
-            <!-- Score subtype selector -->
-            <template v-if="region.region_type === 'score'">
+          <!-- Type selector - vertical layout -->
+          <div class="mt-2 space-y-2">
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-midnight-500 w-10">Type:</span>
               <select
-                :value="region.score_subtype || ''"
-                @change="(e) => handleScoreSubtypeChange(region.id, e.target.value)"
-                class="bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
+                :value="region.region_type || 'generic'"
+                @change="(e) => handleRegionTypeChange(region.id, e.target.value)"
+                class="flex-1 bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
               >
-                <option value="">Any</option>
-                <option value="singles">Singles (+/-1)</option>
+                <option value="generic">Generic</option>
+                <option value="time">Time</option>
+                <option value="score">Score</option>
               </select>
+            </div>
+
+            <!-- Score options - vertical layout -->
+            <template v-if="region.region_type === 'score'">
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-midnight-500 w-10">Mode:</span>
+                <select
+                  :value="region.score_subtype || ''"
+                  @change="(e) => handleScoreSubtypeChange(region.id, e.target.value)"
+                  class="flex-1 bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
+                >
+                  <option value="">Any</option>
+                  <option value="singles">Singles</option>
+                </select>
+              </div>
+              
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-midnight-500 w-10">Team:</span>
+                <select
+                  :value="region.score_team || ''"
+                  @change="(e) => handleScoreTeamChange(region.id, e.target.value)"
+                  class="flex-1 bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
+                >
+                  <option value="">Any</option>
+                  <option value="home">Home</option>
+                  <option value="away">Away</option>
+                </select>
+              </div>
               
               <!-- Reset button for singles mode -->
               <button
                 v-if="region.score_subtype === 'singles'"
                 @click="handleResetValidator(region.id)"
-                class="px-2 py-1 bg-ember-500/20 hover:bg-ember-500/30 text-ember-400 text-xs rounded"
+                class="w-full px-2 py-1 bg-ember-500/20 hover:bg-ember-500/30 text-ember-400 text-xs rounded"
                 title="Reset validator state"
               >
-                Reset
+                Reset Validator
               </button>
             </template>
 
             <!-- Time format selector -->
             <template v-if="region.region_type === 'time'">
-              <select
-                :value="region.time_format || 'm:ss'"
-                @change="(e) => handleTimeFormatChange(region.id, e.target.value)"
-                class="bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
-              >
-                <option value="m:ss">m:ss</option>
-                <option value="mm:ss">mm:ss</option>
-              </select>
+              <div class="flex items-center gap-2">
+                <span class="text-xs text-midnight-500 w-10">Format:</span>
+                <select
+                  :value="region.time_format || 'm:ss'"
+                  @change="(e) => handleTimeFormatChange(region.id, e.target.value)"
+                  class="flex-1 bg-midnight-900 border border-midnight-700 rounded px-2 py-1 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
+                >
+                  <option value="m:ss">m:ss</option>
+                  <option value="mm:ss">mm:ss</option>
+                </select>
+              </div>
             </template>
           </div>
 
@@ -725,6 +772,39 @@ function templateToDataUrl(template) {
           GET /ocr/{{ session?.id }}/{'{region_name}'}
         </div>
         <p class="text-midnight-600">Returns plain text result for a specific region</p>
+      </div>
+    </section>
+
+    <div class="border-t border-midnight-800" />
+
+    <section>
+      <h3 class="text-xs uppercase tracking-widest text-midnight-500 mb-3">File Output</h3>
+      <p class="text-xs text-midnight-600 mb-3">
+        Save OCR results to text files. Each region creates a file: {region_name}.txt
+      </p>
+      
+      <div class="space-y-2">
+        <div class="flex items-center gap-2">
+          <input
+            type="text"
+            :value="session?.output_folder || ''"
+            @change="(e) => handleOutputFolderChange(e.target.value)"
+            placeholder="Enter folder path..."
+            class="flex-1 bg-midnight-900 border border-midnight-700 rounded px-2 py-2 text-xs text-midnight-300 focus:outline-none focus:border-electric-500"
+          />
+        </div>
+        
+        <div v-if="session?.output_folder" class="text-xs text-electric-400">
+          Writing to: {{ session.output_folder }}
+        </div>
+        
+        <button
+          v-if="session?.output_folder"
+          @click="handleOutputFolderChange('')"
+          class="w-full px-2 py-1.5 bg-midnight-700 hover:bg-midnight-600 text-midnight-300 text-xs rounded transition-colors"
+        >
+          Disable File Output
+        </button>
       </div>
     </section>
 

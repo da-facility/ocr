@@ -191,6 +191,11 @@ class OcrRegionUpdateRequest(BaseModel):
     ocr_backend: Optional[str] = None
     region_type: Optional[str] = None  # "generic", "time", "score"
     score_subtype: Optional[str] = None  # For score type: None or "singles"
+    score_team: Optional[str] = None  # For score type: None, "home", or "away"
+
+
+class OutputFolderRequest(BaseModel):
+    folder_path: Optional[str] = None
 
 
 @app.get("/api/cameras")
@@ -354,6 +359,20 @@ async def update_morphology(session_id: str, request: MorphologyRequest):
     return response.data
 
 
+@app.put("/api/sessions/{session_id}/output-folder")
+async def update_output_folder(session_id: str, request: OutputFolderRequest):
+    """Update the output folder for OCR results."""
+    client = get_ipc_client()
+    response = client.send_command(
+        Command.UPDATE_OUTPUT_FOLDER,
+        session_id=session_id,
+        output_folder=request.folder_path
+    )
+    if not response.success or not response.data:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"status": "updated", "output_folder": request.folder_path}
+
+
 @app.post("/api/sessions/{session_id}/pick-color")
 async def pick_color(session_id: str, request: PickColorRequest):
     """Pick a color from the perspective-corrected frame at given coordinates."""
@@ -402,7 +421,8 @@ async def update_ocr_region(session_id: str, region_id: str, request: OcrRegionU
         label=request.label,
         ocr_backend=request.ocr_backend,
         region_type=request.region_type,
-        score_subtype=request.score_subtype
+        score_subtype=request.score_subtype,
+        score_team=request.score_team
     )
     if not response.success or not response.data:
         raise HTTPException(status_code=400, detail="Session/region not found or name already exists")

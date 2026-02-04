@@ -33,6 +33,7 @@ class Command(Enum):
     DELETE_COLOR_FILTER = "delete_color_filter"
     CLEAR_COLOR_FILTERS = "clear_color_filters"
     UPDATE_MORPHOLOGY = "update_morphology"
+    UPDATE_OUTPUT_FOLDER = "update_output_folder"
     PICK_COLOR = "pick_color"
     
     # OCR region commands
