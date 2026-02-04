@@ -1,0 +1,7 @@
+{
+  "name": "ocr-backend",
+  "scripts": {
+    "lint": "mise x -- uv run ruff check .",
+    "lint:fix": "mise x -- uv run ruff check . --fix"
+  }
+}
