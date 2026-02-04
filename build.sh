@@ -2,12 +2,30 @@
 set -e
 cd "$(dirname "$0")"
 
-# Parse arguments
+# Defaults
 RELEASE_MODE=0
-for arg in "$@"; do
-    if [ "$arg" = "--release" ]; then
-        RELEASE_MODE=1
-    fi
+OUTPUT_NAME="OCR-Camera"
+OUTPUT_DIR="dist"
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --release)
+            RELEASE_MODE=1
+            shift
+            ;;
+        --output)
+            OUTPUT_NAME="$2"
+            shift 2
+            ;;
+        --directory)
+            OUTPUT_DIR="$2"
+            shift 2
+            ;;
+        *)
+            shift
+            ;;
+    esac
 done
 
 command -v uv &>/dev/null || { echo "ERROR: uv not installed"; exit 1; }
@@ -18,6 +36,7 @@ if [ "$RELEASE_MODE" = "1" ]; then
 else
     echo "Building DEBUG executable (sourcemaps, no UPX, faster iterations)"
 fi
+echo "  Output: $OUTPUT_DIR/$OUTPUT_NAME"
 echo ""
 
 echo "[1/4] Installing backend dependencies..."
@@ -40,10 +59,11 @@ if [ "$RELEASE_MODE" = "1" ]; then
 else
     export RELEASE_BUILD=0
 fi
-uv run pyinstaller ocr-camera.spec --noconfirm --distpath ../dist
+export OUTPUT_NAME
+uv run pyinstaller ocr-camera.spec --noconfirm --distpath ../$OUTPUT_DIR
 
 echo ""
-echo "Built: dist/OCR-Camera"
+echo "Built: $OUTPUT_DIR/$OUTPUT_NAME"
 if [ "$RELEASE_MODE" = "0" ]; then
     echo "  (debug build with sourcemaps, no UPX)"
 else

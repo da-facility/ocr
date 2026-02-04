@@ -7,6 +7,7 @@ Build with:
 
 Environment variables:
     RELEASE_BUILD=1  - Enable UPX compression (smaller but slower build)
+    OUTPUT_NAME=name - Set output executable name (default: OCR-Camera)
 
 Prerequisites:
     1. Build frontend first: cd ../frontend && bun run build
@@ -19,6 +20,9 @@ from pathlib import Path
 
 # Build mode: release enables UPX compression
 is_release = os.environ.get('RELEASE_BUILD', '0') == '1'
+
+# Output name (without extension)
+output_name = os.environ.get('OUTPUT_NAME', 'OCR-Camera')
 
 # Paths
 backend_dir = Path(SPECPATH)
@@ -119,7 +123,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='OCR-Camera',
+    name=output_name,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
