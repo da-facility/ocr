@@ -177,21 +177,32 @@ class IPCClient:
         """Send a command and wait for response with timeout."""
         if timeout is None:
             timeout = self.timeout
-        
+
         request_id = self._next_request_id()
         msg = IPCMessage(command=command, args=kwargs, request_id=request_id)
-        
+
         with self.lock:
             try:
                 self.conn.send(msg)
-                
-                if self.conn.poll(timeout):
-                    response = self.conn.recv()
-                    if isinstance(response, IPCResponse):
-                        return response
-                    return IPCResponse(success=False, error="Invalid response type")
-                else:
-                    return IPCResponse(success=False, error="Timeout waiting for response", request_id=request_id)
+
+                start_time = time.time()
+                while True:
+                    remaining = timeout - (time.time() - start_time)
+                    if remaining <= 0:
+                        return IPCResponse(success=False, error="Timeout waiting for response", request_id=request_id)
+
+                    if self.conn.poll(remaining):
+                        response = self.conn.recv()
+                        if isinstance(response, IPCResponse):
+                            # Check if this response matches our request
+                            if response.request_id == request_id:
+                                return response
+                            # Stale response from a timed-out request, discard and keep waiting
+                            print(f"[IPC] Discarding stale response (got id={response.request_id}, expected={request_id})")
+                            continue
+                        return IPCResponse(success=False, error="Invalid response type")
+                    else:
+                        return IPCResponse(success=False, error="Timeout waiting for response", request_id=request_id)
             except Exception as e:
                 return IPCResponse(success=False, error=str(e), request_id=request_id)
     

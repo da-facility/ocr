@@ -317,7 +317,7 @@ watch(sessionId, () => {
         </nav>
 
         <!-- Tab 1: Set Perspective - single original stream -->
-        <div v-if="activeTab === 'perspective'" class="flex-1 relative bg-midnight-950">
+        <div v-if="activeTab === 'perspective'" class="flex-1 relative bg-midnight-950 overflow-hidden min-h-0">
           <StreamViewer 
             :src="originalStreamUrl" 
             class="w-full h-full"

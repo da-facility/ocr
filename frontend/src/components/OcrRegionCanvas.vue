@@ -293,12 +293,5 @@ onUnmounted(() => {
       />
     </svg>
 
-    <div 
-      class="absolute bottom-4 left-1/2 -translate-x-1/2 bg-midnight-900/90 backdrop-blur px-4 py-2 rounded-lg border border-midnight-700"
-    >
-      <span class="text-sm text-midnight-300">
-        Draw rectangles to create OCR regions • Drag to move
-      </span>
-    </div>
   </div>
 </template>
