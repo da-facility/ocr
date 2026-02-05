@@ -31,8 +31,8 @@ shift
 goto parse_args
 :done_args
 
-where uv >nul 2>&1 || (echo ERROR: uv not installed & exit /b 1)
-where bun >nul 2>&1 || (echo ERROR: bun not installed & exit /b 1)
+where mise >nul 2>&1 || (echo ERROR: mise not installed & exit /b 1)
+mise install
 
 if "%RELEASE_MODE%"=="1" (
     echo Building RELEASE executable (smallest, UPX enabled, no sourcemaps)
@@ -43,18 +43,18 @@ echo   Output: %OUTPUT_DIR%\%OUTPUT_NAME%.exe
 echo.
 
 echo [1/4] Installing backend dependencies...
-cd backend && uv sync
+cd backend && mise exec -- uv sync
 if errorlevel 1 exit /b 1
 
 echo [2/4] Installing frontend dependencies...
-cd ..\frontend && call bun install
+cd ..\frontend && call mise exec -- bun install
 if errorlevel 1 exit /b 1
 
 echo [3/4] Building frontend...
 if "%RELEASE_MODE%"=="1" (
-    call bun run build
+    call mise exec -- bun run build
 ) else (
-    call bun run build:debug
+    call mise exec -- bun run build:debug
 )
 if errorlevel 1 exit /b 1
 
@@ -66,7 +66,7 @@ if "%RELEASE_MODE%"=="1" (
     set "RELEASE_BUILD=0"
 )
 set "OUTPUT_NAME=%OUTPUT_NAME%"
-uv run pyinstaller ocr-camera.spec --noconfirm --distpath ..\%OUTPUT_DIR%
+mise exec -- uv run pyinstaller ocr-camera.spec --noconfirm --distpath ..\%OUTPUT_DIR%
 if errorlevel 1 exit /b 1
 
 echo.
