@@ -4,7 +4,7 @@
     radial-gradient(circle at top left, rgba(255, 255, 255, 0.7), transparent 26%),
     radial-gradient(circle at 86% 12%, rgba(201, 75, 34, 0.12), transparent 24%),
     linear-gradient(180deg, #f3ebdf 0%, #e6dccd 100%);
-  font: 16px/1.45 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+  font: 14px/1.45 Roboto, 'Helvetica Neue', Arial, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;

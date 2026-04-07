@@ -17,8 +17,17 @@ import {
   fitWithin,
   processFrame,
   recognizeZone,
+  sampleColor,
 } from './lib/vision'
-import type { CandidateGlyph, GlyphTemplate, OutputTarget, Point, ProcessedFrame, Zone } from './lib/types'
+import type {
+  CandidateGlyph,
+  ColorFilter,
+  GlyphTemplate,
+  OutputTarget,
+  Point,
+  ProcessedFrame,
+  Zone,
+} from './lib/types'
 
 const STORAGE_KEYS = {
   points: 'web-rewrite:points',
@@ -27,11 +36,12 @@ const STORAGE_KEYS = {
   threshold: 'web-rewrite:threshold',
   invert: 'web-rewrite:invert',
   deviceId: 'web-rewrite:device-id',
+  colors: 'web-rewrite:colors',
 }
 
 const ZONE_COLORS = ['#d44d1c', '#1859c4', '#107362', '#9b3f16', '#735b08', '#8d2459']
 
-type SectionId = 'capture' | 'corners' | 'threshold' | 'zones' | 'lexicon' | 'output'
+type SectionId = 'capture' | 'corners' | 'colors' | 'zones' | 'lexicon' | 'output'
 
 function AccordionSection(props: {
   id: SectionId
@@ -106,6 +116,14 @@ function rectFromPoints(a: Point, b: Point) {
   }
 }
 
+function describeRgb(rgb: [number, number, number]) {
+  return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`
+}
+
+function describeHsv(hsv: [number, number, number]) {
+  return `hsv(${Math.round(hsv[0])}, ${Math.round(hsv[1] * 100)}%, ${Math.round(hsv[2] * 100)}%)`
+}
+
 function App() {
   const [devices, setDevices] = createSignal<MediaDeviceInfo[]>([])
   const [selectedDeviceId, setSelectedDeviceId] = createSignal(
@@ -117,21 +135,27 @@ function App() {
   const [lexicon, setLexicon] = createSignal<GlyphTemplate[]>(
     loadStored<GlyphTemplate[]>(STORAGE_KEYS.lexicon, []),
   )
+  const [colorFilters, setColorFilters] = createSignal<ColorFilter[]>(
+    loadStored<ColorFilter[]>(STORAGE_KEYS.colors, []),
+  )
   const [threshold, setThreshold] = createSignal(loadStored<number>(STORAGE_KEYS.threshold, 172))
   const [invert, setInvert] = createSignal(loadStored<boolean>(STORAGE_KEYS.invert, false))
   const [results, setResults] = createSignal<Record<string, string>>({})
   const [drawMode, setDrawMode] = createSignal(false)
   const [selectedZoneId, setSelectedZoneId] = createSignal<string | null>(null)
   const [candidateGlyphs, setCandidateGlyphs] = createSignal<CandidateGlyph[]>([])
-  const [candidateLabels, setCandidateLabels] = createSignal<Record<string, string>>({})
+  const [candidateLetters, setCandidateLetters] = createSignal<Record<string, string>>({})
   const [outputTarget, setOutputTarget] = createSignal<OutputTarget>(null)
   const [outputMessage, setOutputMessage] = createSignal('No output target selected.')
   const [frameSize, setFrameSize] = createSignal({ width: 720, height: 405 })
   const [activeSection, setActiveSection] = createSignal<SectionId>('capture')
+  const [viewerHostSize, setViewerHostSize] = createSignal({ width: 960, height: 540 })
 
-  let sourceCanvas!: HTMLCanvasElement
-  let processedCanvas!: HTMLCanvasElement
   let video!: HTMLVideoElement
+  let viewerHost!: HTMLDivElement
+  let mainCanvas!: HTMLCanvasElement
+  let splitSourceCanvas!: HTMLCanvasElement
+  let splitMaskCanvas!: HTMLCanvasElement
   let renderHandle = 0
   let stream: MediaStream | null = null
   let latestFrame: ProcessedFrame | null = null
@@ -141,18 +165,15 @@ function App() {
   let queuedOutput = false
   const lastWrittenCache = new Map<string, string>()
 
-  const sourceBuffer = document.createElement('canvas')
+  const rawBuffer = document.createElement('canvas')
+  const transformedBuffer = document.createElement('canvas')
   const processedBuffer = document.createElement('canvas')
-  const sourceContext = sourceBuffer.getContext('2d', {
-    willReadFrequently: true,
-  }) as CanvasRenderingContext2D
+  const rawContext = rawBuffer.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D
+  const transformedContext = transformedBuffer.getContext('2d') as CanvasRenderingContext2D
   const processedContext = processedBuffer.getContext('2d') as CanvasRenderingContext2D
 
   const [draggingPointIndex, setDraggingPointIndex] = createSignal<number | null>(null)
-  const [draftZone, setDraftZone] = createSignal<{
-    start: Point
-    current: Point
-  } | null>(null)
+  const [draftZone, setDraftZone] = createSignal<{ start: Point; current: Point } | null>(null)
   const [draggingZone, setDraggingZone] = createSignal<{
     id: string
     offsetX: number
@@ -163,15 +184,35 @@ function App() {
   const supportsFileAccess = createMemo(
     () => typeof window !== 'undefined' && (!!window.showDirectoryPicker || !!window.showSaveFilePicker),
   )
+  const frameAspect = createMemo(() => frameSize().width / frameSize().height)
+  const splitOrientation = createMemo<'horizontal' | 'vertical'>(() => {
+    const host = viewerHostSize()
+    const aspect = frameAspect()
+    const horizontalPaneAspect = host.width / 2 / Math.max(1, host.height)
+    const verticalPaneAspect = host.width / Math.max(1, host.height / 2)
+    const score = (paneAspect: number) => Math.max(aspect / paneAspect, paneAspect / aspect)
+
+    return score(horizontalPaneAspect) <= score(verticalPaneAspect) ? 'horizontal' : 'vertical'
+  })
+  const stageAspect = createMemo(() => {
+    const aspect = frameAspect()
+    if (activeSection() === 'colors') {
+      return splitOrientation() === 'horizontal' ? aspect * 2 : aspect / 2
+    }
+
+    return aspect
+  })
   const showingProcessed = createMemo(
     () => !['capture', 'corners'].includes(activeSection()),
   )
+
   createEffect(() => saveStored(STORAGE_KEYS.points, points()))
   createEffect(() => saveStored(STORAGE_KEYS.zones, zones()))
   createEffect(() => saveStored(STORAGE_KEYS.lexicon, lexicon()))
   createEffect(() => saveStored(STORAGE_KEYS.threshold, threshold()))
   createEffect(() => saveStored(STORAGE_KEYS.invert, invert()))
   createEffect(() => saveStored(STORAGE_KEYS.deviceId, selectedDeviceId()))
+  createEffect(() => saveStored(STORAGE_KEYS.colors, colorFilters()))
 
   createEffect(() => {
     if (activeSection() !== 'zones') {
@@ -274,35 +315,62 @@ function App() {
       return
     }
 
-    const fitted = fitWithin(video.videoWidth, video.videoHeight, 960, 720)
+    const fitted = fitWithin(video.videoWidth, video.videoHeight, 1280, 960)
     setFrameSize(fitted)
-    sourceBuffer.width = fitted.width
-    sourceBuffer.height = fitted.height
+    rawBuffer.width = fitted.width
+    rawBuffer.height = fitted.height
+    transformedBuffer.width = fitted.width
+    transformedBuffer.height = fitted.height
     processedBuffer.width = fitted.width
     processedBuffer.height = fitted.height
-    sourceCanvas.width = fitted.width
-    sourceCanvas.height = fitted.height
-    processedCanvas.width = fitted.width
-    processedCanvas.height = fitted.height
   }
 
-  function paintProcessedFrame(frame: ProcessedFrame) {
-    const image = new ImageData(Uint8ClampedArray.from(frame.rgba), frame.width, frame.height)
-    processedContext.putImageData(image, 0, 0)
-    const displayContext = processedCanvas.getContext('2d')
-    displayContext?.clearRect(0, 0, frame.width, frame.height)
-    displayContext?.putImageData(image, 0, 0)
+  function ensureDisplayCanvas(target: HTMLCanvasElement) {
+    const rect = target.getBoundingClientRect()
+    const dpr = window.devicePixelRatio || 1
+    const width = Math.max(1, Math.round(rect.width * dpr))
+    const height = Math.max(1, Math.round(rect.height * dpr))
+
+    if (target.width !== width || target.height !== height) {
+      target.width = width
+      target.height = height
+    }
   }
 
-  function paintSourceFrame() {
-    const width = frameSize().width
-    const height = frameSize().height
-    sourceContext.drawImage(video, 0, 0, width, height)
-    const image = sourceContext.getImageData(0, 0, width, height)
-    const displayContext = sourceCanvas.getContext('2d')
-    displayContext?.clearRect(0, 0, width, height)
-    displayContext?.putImageData(image, 0, 0)
-    return image
+  function drawBufferCover(source: HTMLCanvasElement, target: HTMLCanvasElement) {
+    ensureDisplayCanvas(target)
+    const context = target.getContext('2d')
+    if (!context) {
+      return
+    }
+
+    const sw = source.width
+    const sh = source.height
+    const dw = target.width
+    const dh = target.height
+    const scale = Math.max(dw / sw, dh / sh)
+    const drawWidth = sw * scale
+    const drawHeight = sh * scale
+    const offsetX = (dw - drawWidth) / 2
+    const offsetY = (dh - drawHeight) / 2
+
+    context.clearRect(0, 0, dw, dh)
+    context.drawImage(source, offsetX, offsetY, drawWidth, drawHeight)
+  }
+
+  function paintBuffersToDisplays() {
+    if (activeSection() === 'colors') {
+      drawBufferCover(transformedBuffer, splitSourceCanvas)
+      drawBufferCover(processedBuffer, splitMaskCanvas)
+      return
+    }
+
+    if (showingProcessed()) {
+      drawBufferCover(processedBuffer, mainCanvas)
+      return
+    }
+
+    drawBufferCover(rawBuffer, mainCanvas)
   }
 
   function runRecognition(frame: ProcessedFrame) {
@@ -318,9 +386,22 @@ function App() {
   function renderLoop(now: number) {
     if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       if (now - lastPreviewAt >= 1000 / 12) {
-        const sourceImage = paintSourceFrame()
-        latestFrame = processFrame(sourceImage, points(), threshold(), invert())
-        paintProcessedFrame(latestFrame)
+        rawContext.drawImage(video, 0, 0, frameSize().width, frameSize().height)
+        const sourceImage = rawContext.getImageData(0, 0, frameSize().width, frameSize().height)
+
+        latestFrame = processFrame(sourceImage, points(), threshold(), invert(), colorFilters())
+
+        transformedContext.putImageData(
+          new ImageData(Uint8ClampedArray.from(latestFrame.sourceRgba), latestFrame.width, latestFrame.height),
+          0,
+          0,
+        )
+        processedContext.putImageData(
+          new ImageData(Uint8ClampedArray.from(latestFrame.rgba), latestFrame.width, latestFrame.height),
+          0,
+          0,
+        )
+        paintBuffersToDisplays()
         lastPreviewAt = now
       }
 
@@ -342,6 +423,26 @@ function App() {
     return {
       x: clamp(((event.clientX - rect.left) / rect.width) * width, 0, width),
       y: clamp(((event.clientY - rect.top) / rect.height) * height, 0, height),
+    }
+  }
+
+  function mapPointerToCoverCanvas(
+    event: PointerEvent & { currentTarget: HTMLDivElement },
+    sourceWidth: number,
+    sourceHeight: number,
+  ) {
+    const rect = event.currentTarget.getBoundingClientRect()
+    const relX = event.clientX - rect.left
+    const relY = event.clientY - rect.top
+    const scale = Math.max(rect.width / sourceWidth, rect.height / sourceHeight)
+    const drawWidth = sourceWidth * scale
+    const drawHeight = sourceHeight * scale
+    const offsetX = (rect.width - drawWidth) / 2
+    const offsetY = (rect.height - drawHeight) / 2
+
+    return {
+      x: clamp((relX - offsetX) / scale, 0, sourceWidth - 1),
+      y: clamp((relY - offsetY) / scale, 0, sourceHeight - 1),
     }
   }
 
@@ -387,7 +488,7 @@ function App() {
   }
 
   function handleProcessedPointerDown(event: PointerEvent & { currentTarget: SVGSVGElement }) {
-    if (!showingProcessed()) {
+    if (!showingProcessed() || activeSection() === 'colors') {
       return
     }
 
@@ -430,7 +531,7 @@ function App() {
   }
 
   function handleProcessedPointerMove(event: PointerEvent & { currentTarget: SVGSVGElement }) {
-    if (!showingProcessed()) {
+    if (!showingProcessed() || activeSection() === 'colors') {
       return
     }
 
@@ -493,6 +594,24 @@ function App() {
     setDraggingZone(null)
   }
 
+  function handleColorPick(event: PointerEvent & { currentTarget: HTMLDivElement }) {
+    if (activeSection() !== 'colors' || !latestFrame) {
+      return
+    }
+
+    const point = mapPointerToCoverCanvas(event, latestFrame.width, latestFrame.height)
+    const picked = sampleColor(latestFrame, point.x, point.y)
+    const filter: ColorFilter = {
+      id: uid('color'),
+      rgb: picked.rgb,
+      hsv: picked.hsv,
+      rgbTolerance: 42,
+      hsvTolerance: 18,
+    }
+
+    setColorFilters([...colorFilters(), filter])
+  }
+
   function updateZoneLabel(id: string, label: string) {
     setZones(zones().map((zone) => (zone.id === id ? { ...zone, label } : zone)))
   }
@@ -516,18 +635,18 @@ function App() {
 
     const found = detectCandidates(latestFrame, selectedZone()!)
     setCandidateGlyphs(found)
-    setCandidateLabels(Object.fromEntries(found.map((glyph) => [glyph.id, ''])))
+    setCandidateLetters(Object.fromEntries(found.map((glyph) => [glyph.id, ''])))
   }
 
   function saveGlyphCandidate(candidate: CandidateGlyph) {
-    const label = (candidateLabels()[candidate.id] ?? '').trim()
-    if (!label) {
+    const letter = (candidateLetters()[candidate.id] ?? '').trim()
+    if (!letter) {
       return
     }
 
     const template: GlyphTemplate = {
       id: uid('glyph'),
-      label,
+      letter,
       width: candidate.normalizedWidth,
       height: candidate.normalizedHeight,
       pixels: candidate.normalized,
@@ -537,13 +656,26 @@ function App() {
     setLexicon([...lexicon(), template])
     setCandidateGlyphs(candidateGlyphs().filter((glyph) => glyph.id !== candidate.id))
 
-    const nextLabels = { ...candidateLabels() }
-    delete nextLabels[candidate.id]
-    setCandidateLabels(nextLabels)
+    const nextLetters = { ...candidateLetters() }
+    delete nextLetters[candidate.id]
+    setCandidateLetters(nextLetters)
   }
 
   function removeGlyph(id: string) {
     setLexicon(lexicon().filter((glyph) => glyph.id !== id))
+  }
+
+  function updateColorFilter(
+    id: string,
+    changes: Partial<Pick<ColorFilter, 'rgbTolerance' | 'hsvTolerance'>>,
+  ) {
+    setColorFilters(
+      colorFilters().map((filter) => (filter.id === id ? { ...filter, ...changes } : filter)),
+    )
+  }
+
+  function removeColorFilter(id: string) {
+    setColorFilters(colorFilters().filter((filter) => filter.id !== id))
   }
 
   async function chooseOutputDirectory() {
@@ -575,14 +707,32 @@ function App() {
   }
 
   function toggleSection(section: SectionId) {
-    setActiveSection((current) => (current === section ? section : section))
+    setActiveSection(section)
   }
 
   onMount(() => {
     void refreshDevices()
     void startStream()
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) {
+        return
+      }
+
+      setViewerHostSize({
+        width: entry.contentRect.width,
+        height: entry.contentRect.height,
+      })
+    })
+
+    resizeObserver.observe(viewerHost)
     renderHandle = window.requestAnimationFrame(renderLoop)
     navigator.mediaDevices?.addEventListener?.('devicechange', refreshDevices)
+
+    onCleanup(() => {
+      resizeObserver.disconnect()
+    })
   })
 
   onCleanup(() => {
@@ -601,113 +751,124 @@ function App() {
           <span>camera {permissionState()}</span>
           <span>{zones().length} zones</span>
           <span>{lexicon().length} glyphs</span>
+          <span>{colorFilters().length} colors</span>
           <span>output {outputTarget() ? outputTarget()!.type : 'off'}</span>
         </div>
       </header>
 
       <main class="main-grid">
         <section class="viewer-column">
-          <div
-            class="viewer-stage"
-            style={{
-              'aspect-ratio': `${frameSize().width} / ${frameSize().height}`,
-            }}
-          >
-            <canvas
-              ref={sourceCanvas}
-              class={`viewer-canvas ${showingProcessed() ? 'hidden' : ''}`}
-              width={frameSize().width}
-              height={frameSize().height}
-            />
-            <canvas
-              ref={processedCanvas}
-              class={`viewer-canvas ${showingProcessed() ? '' : 'hidden'}`}
-              width={frameSize().width}
-              height={frameSize().height}
-            />
+          <div ref={viewerHost} class="viewer-host">
+            <div
+              class="viewer-stage"
+              style={{
+                'aspect-ratio': `${stageAspect()}`,
+              }}
+            >
+              <Show
+                when={activeSection() === 'colors'}
+                fallback={
+                  <>
+                    <canvas ref={mainCanvas} class="viewer-canvas" />
 
-            <Show when={!showingProcessed()}>
-              <svg
-                class="viewer-overlay"
-                viewBox={`0 0 ${frameSize().width} ${frameSize().height}`}
-                onPointerDown={handleSourcePointerDown}
-                onPointerMove={handleSourcePointerMove}
-                onPointerUp={handleSourcePointerUp}
+                    <Show when={!showingProcessed()}>
+                      <svg
+                        class="viewer-overlay"
+                        viewBox={`0 0 ${frameSize().width} ${frameSize().height}`}
+                        onPointerDown={handleSourcePointerDown}
+                        onPointerMove={handleSourcePointerMove}
+                        onPointerUp={handleSourcePointerUp}
+                      >
+                        <Show when={points().length >= 2}>
+                          <polyline
+                            points={points()
+                              .map((point) => `${point.x},${point.y}`)
+                              .join(' ')}
+                            class="path-line"
+                          />
+                        </Show>
+                        <Show when={points().length === 4}>
+                          <polygon
+                            points={points()
+                              .map((point) => `${point.x},${point.y}`)
+                              .join(' ')}
+                            class="path-fill"
+                          />
+                        </Show>
+                        <For each={points()}>
+                          {(point, index) => (
+                            <g>
+                              <circle cx={point.x} cy={point.y} r="10" class="handle-shadow" />
+                              <circle cx={point.x} cy={point.y} r="6" class="handle-core" />
+                              <text x={point.x + 12} y={point.y - 10} class="overlay-label">
+                                {index() + 1}
+                              </text>
+                            </g>
+                          )}
+                        </For>
+                      </svg>
+                    </Show>
+
+                    <Show when={showingProcessed()}>
+                      <svg
+                        class="viewer-overlay"
+                        viewBox={`0 0 ${frameSize().width} ${frameSize().height}`}
+                        onPointerDown={handleProcessedPointerDown}
+                        onPointerMove={handleProcessedPointerMove}
+                        onPointerUp={handleProcessedPointerUp}
+                      >
+                        <For each={zones()}>
+                          {(zone) => (
+                            <g class={selectedZoneId() === zone.id ? 'zone-group selected' : 'zone-group'}>
+                              <rect
+                                x={zone.x}
+                                y={zone.y}
+                                width={zone.width}
+                                height={zone.height}
+                                fill={`${zone.color}18`}
+                                stroke={zone.color}
+                                stroke-width="2"
+                              />
+                              <rect x={zone.x} y={zone.y - 18} width="112" height="18" fill={zone.color} />
+                              <text x={zone.x + 8} y={zone.y - 5} class="overlay-label invert">
+                                {zone.label}
+                              </text>
+                            </g>
+                          )}
+                        </For>
+
+                        <Show when={draftZone()}>
+                          {(draft) => {
+                            const rect = rectFromPoints(draft().start, draft().current)
+                            return (
+                              <rect
+                                x={rect.x}
+                                y={rect.y}
+                                width={rect.width}
+                                height={rect.height}
+                                class="zone-draft"
+                              />
+                            )
+                          }}
+                        </Show>
+                      </svg>
+                    </Show>
+                  </>
+                }
               >
-                <Show when={points().length >= 2}>
-                  <polyline
-                    points={points()
-                      .map((point) => `${point.x},${point.y}`)
-                      .join(' ')}
-                    class="path-line"
-                  />
-                </Show>
-                <Show when={points().length === 4}>
-                  <polygon
-                    points={points()
-                      .map((point) => `${point.x},${point.y}`)
-                      .join(' ')}
-                    class="path-fill"
-                  />
-                </Show>
-                <For each={points()}>
-                  {(point, index) => (
-                    <g>
-                      <circle cx={point.x} cy={point.y} r="10" class="handle-shadow" />
-                      <circle cx={point.x} cy={point.y} r="6" class="handle-core" />
-                      <text x={point.x + 12} y={point.y - 10} class="overlay-label">
-                        {index() + 1}
-                      </text>
-                    </g>
-                  )}
-                </For>
-              </svg>
-            </Show>
-
-            <Show when={showingProcessed()}>
-              <svg
-                class="viewer-overlay"
-                viewBox={`0 0 ${frameSize().width} ${frameSize().height}`}
-                onPointerDown={handleProcessedPointerDown}
-                onPointerMove={handleProcessedPointerMove}
-                onPointerUp={handleProcessedPointerUp}
-              >
-                <For each={zones()}>
-                  {(zone) => (
-                    <g class={selectedZoneId() === zone.id ? 'zone-group selected' : 'zone-group'}>
-                      <rect
-                        x={zone.x}
-                        y={zone.y}
-                        width={zone.width}
-                        height={zone.height}
-                        fill={`${zone.color}18`}
-                        stroke={zone.color}
-                        stroke-width="2"
-                      />
-                      <rect x={zone.x} y={zone.y - 18} width="112" height="18" fill={zone.color} />
-                      <text x={zone.x + 8} y={zone.y - 5} class="overlay-label invert">
-                        {zone.label}
-                      </text>
-                    </g>
-                  )}
-                </For>
-
-                <Show when={draftZone()}>
-                  {(draft) => {
-                    const rect = rectFromPoints(draft().start, draft().current)
-                    return (
-                      <rect
-                        x={rect.x}
-                        y={rect.y}
-                        width={rect.width}
-                        height={rect.height}
-                        class="zone-draft"
-                      />
-                    )
-                  }}
-                </Show>
-              </svg>
-            </Show>
+                <div class={`split-layout ${splitOrientation()}`}>
+                  <div class="split-pane source-pane">
+                    <canvas ref={splitSourceCanvas} class="viewer-canvas" />
+                    <div class="pane-overlay source-picker" onPointerDown={handleColorPick}>
+                      <span>click to add color</span>
+                    </div>
+                  </div>
+                  <div class="split-pane">
+                    <canvas ref={splitMaskCanvas} class="viewer-canvas" />
+                  </div>
+                </div>
+              </Show>
+            </div>
           </div>
 
           <section class="results-strip">
@@ -774,10 +935,70 @@ function App() {
             </div>
           </AccordionSection>
 
-          <AccordionSection id="threshold" title="threshold" active={activeSection() === 'threshold'} onToggle={toggleSection}>
+          <AccordionSection id="colors" title="colors" active={activeSection() === 'colors'} onToggle={toggleSection}>
             <div class="stack">
+              <p>Left pane is the perspective-corrected source crop. Click it to add a sampled color. Right pane is the processed mask.</p>
+
+              <div class="control-row">
+                <button class="button secondary" disabled={colorFilters().length === 0} onClick={() => setColorFilters([])}>
+                  clear colors
+                </button>
+              </div>
+
+              <div class="color-list">
+                <For each={colorFilters()}>
+                  {(filter) => (
+                    <div class="color-item">
+                      <div class="color-item-head">
+                        <span class="color-swatch" style={{ 'background-color': `rgb(${filter.rgb.join(' ')})` }} />
+                        <div class="color-values">
+                          <strong>{describeRgb(filter.rgb)}</strong>
+                          <span>{describeHsv(filter.hsv)}</span>
+                        </div>
+                        <button class="button secondary small" onClick={() => removeColorFilter(filter.id)}>
+                          remove
+                        </button>
+                      </div>
+
+                      <label class="field">
+                        <span>RGB similarity</span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="180"
+                          value={filter.rgbTolerance}
+                          onInput={(event) =>
+                            updateColorFilter(filter.id, {
+                              rgbTolerance: Number(event.currentTarget.value),
+                            })}
+                        />
+                        <strong>{filter.rgbTolerance}</strong>
+                      </label>
+
+                      <label class="field">
+                        <span>HSV similarity</span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          value={filter.hsvTolerance}
+                          onInput={(event) =>
+                            updateColorFilter(filter.id, {
+                              hsvTolerance: Number(event.currentTarget.value),
+                            })}
+                        />
+                        <strong>{filter.hsvTolerance}</strong>
+                      </label>
+                    </div>
+                  )}
+                </For>
+                <Show when={colorFilters().length === 0}>
+                  <p>No sampled colors yet.</p>
+                </Show>
+              </div>
+
               <label class="field">
-                <span>threshold</span>
+                <span>fallback threshold</span>
                 <input
                   type="range"
                   min="0"
@@ -794,7 +1015,7 @@ function App() {
                   checked={invert()}
                   onChange={(event) => setInvert(event.currentTarget.checked)}
                 />
-                <span>treat darker pixels as ink</span>
+                <span>treat darker pixels as ink when no colors are selected</span>
               </label>
             </div>
           </AccordionSection>
@@ -828,7 +1049,7 @@ function App() {
                   )}
                 </For>
                 <Show when={zones().length === 0}>
-                  <p>Open this section, press “new zone”, then drag on the viewer.</p>
+                  <p>Open this section, press “new zone”, then drag on the processed viewer.</p>
                 </Show>
               </div>
             </div>
@@ -856,17 +1077,17 @@ function App() {
                   {(glyph) => (
                     <div class="candidate-card">
                       <PixelPreview
-                        pixels={glyph.normalized}
-                        width={glyph.normalizedWidth}
-                        height={glyph.normalizedHeight}
+                        pixels={glyph.pixels}
+                        width={glyph.width}
+                        height={glyph.height}
                         title="Candidate glyph preview"
                       />
                       <input
-                        placeholder="label"
-                        value={candidateLabels()[glyph.id] ?? ''}
+                        placeholder="letter"
+                        value={candidateLetters()[glyph.id] ?? ''}
                         onInput={(event) =>
-                          setCandidateLabels({
-                            ...candidateLabels(),
+                          setCandidateLetters({
+                            ...candidateLetters(),
                             [glyph.id]: event.currentTarget.value,
                           })}
                       />
@@ -882,8 +1103,8 @@ function App() {
                 <For each={lexicon()}>
                   {(glyph) => (
                     <div class="saved-card">
-                      <PixelPreview pixels={glyph.pixels} width={glyph.width} height={glyph.height} title={glyph.label} />
-                      <strong>{glyph.label}</strong>
+                      <PixelPreview pixels={glyph.pixels} width={glyph.width} height={glyph.height} title={glyph.letter} />
+                      <strong>{glyph.letter}</strong>
                       <button class="button secondary small" onClick={() => removeGlyph(glyph.id)}>
                         remove
                       </button>
