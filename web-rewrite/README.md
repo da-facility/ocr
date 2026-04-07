@@ -1,28 +1,35 @@
-## Usage
+# Browser OCR Rewrite
+
+Minimal Solid.js rewrite of the OCR camera tool that runs entirely in the browser.
+
+## What it does
+
+- Captures a camera with `getUserMedia`
+- Lets you place and drag 4 perspective points
+- Builds a thresholded black/white processing view
+- Lets you draw and rename OCR zones
+- Detects glyph candidates from a selected zone
+- Saves a browser-side glyph lexicon in `localStorage`
+- Runs simple glyph-template OCR in the page
+- Writes live OCR output to a chosen folder or file when the browser supports the File System Access API
+
+## Run
 
 ```bash
-$ npm install # or pnpm install or yarn install
+bun install
+bun run dev
 ```
 
-### Learn more on the [Solid Website](https://solidjs.com) and come chat with us on our [Discord](https://discord.com/invite/solidjs)
+Then open the Vite URL, allow camera access, and work from the single screen UI.
 
-## Available Scripts
+## Browser notes
 
-In the project directory, you can run:
+- Camera capture needs a secure context in normal browser deployments.
+- Live file writing works best in Chromium-based browsers because it depends on `showDirectoryPicker` / `showSaveFilePicker`.
+- If that API is missing, the OCR app still runs, but direct filesystem output is unavailable.
 
-### `npm run dev`
+## Build
 
-Runs the app in the development mode.<br>
-Open [http://localhost:5173](http://localhost:5173) to view it in the browser.
-
-### `npm run build`
-
-Builds the app for production to the `dist` folder.<br>
-It correctly bundles Solid in production mode and optimizes the build for the best performance.
-
-The build is minified and the filenames include the hashes.<br>
-Your app is ready to be deployed!
-
-## Deployment
-
-Learn more about deploying your application with the [documentations](https://vite.dev/guide/static-deploy.html)
+```bash
+bun run build
+```
