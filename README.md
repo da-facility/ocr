@@ -1,6 +1,6 @@
-# Browser OCR Rewrite
+# OCR
 
-Minimal Solid.js rewrite of the OCR camera tool that runs entirely in the browser.
+Browser-only OCR camera tool.
 
 ## What it does
 
@@ -21,6 +21,12 @@ bun run dev
 ```
 
 Then open the Vite URL, allow camera access, and work from the single screen UI.
+
+## Deploy
+
+Pushes to `main` build the app and publish it to GitHub Pages:
+
+https://da-facility.github.io/ocr/
 
 ## Browser notes
 
