@@ -11,6 +11,8 @@ export type Zone = {
   width: number
   height: number
   color: string
+  ocrEngine?: 'glyph' | 'paddle' | 'mnist'
+  lexiconGroupId?: string
 }
 
 export type ColorFilter = {
@@ -21,9 +23,20 @@ export type ColorFilter = {
   hsvTolerance: number
 }
 
+export type MorphologySettings = {
+  erode: number
+  dilate: number
+}
+
+export type LexiconGroup = {
+  id: string
+  name: string
+}
+
 export type GlyphTemplate = {
   id: string
   letter: string
+  groupId?: string
   width: number
   height: number
   pixels: number[]
@@ -42,6 +55,14 @@ export type CandidateGlyph = {
   normalizedHeight: number
 }
 
+export type DigitDetection = {
+  x: number
+  y: number
+  width: number
+  height: number
+  label: string
+}
+
 export type ProcessedFrame = {
   width: number
   height: number
@@ -53,13 +74,22 @@ export type ProcessedFrame = {
 
 export type OutputTarget =
   | {
+      id: string
       type: 'directory'
+      enabled: boolean
       handle: FileSystemDirectoryHandle
       name: string
     }
   | {
+      id: string
       type: 'file'
+      enabled: boolean
       handle: FileSystemFileHandle
       name: string
     }
-  | null
+  | {
+      id: string
+      type: 'webhook'
+      enabled: boolean
+      url: string
+    }

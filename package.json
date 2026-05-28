@@ -2,19 +2,68 @@
   "name": "ocr",
   "private": true,
   "version": "0.0.0",
+  "productName": "OCR Console",
+  "description": "Camera OCR console for zone-based recognition.",
+  "author": "DA Facility",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:electron": "VITE_BASE=./ tsc -b && vite build",
+    "cert:win": "bun run scripts/ensure-windows-dev-cert.ts",
+    "package:win": "bun run cert:win && bun run build:electron && electron-builder --win portable --x64",
     "preview": "vite preview"
   },
   "dependencies": {
+    "@paddleocr/paddleocr-js": "^0.3.2",
     "solid-js": "^1.9.12"
   },
   "devDependencies": {
     "@types/node": "^24.12.2",
+    "electron": "^42.3.0",
+    "electron-builder": "^26.8.1",
     "typescript": "~6.0.2",
     "vite": "^8.0.4",
     "vite-plugin-solid": "^2.11.12"
+  },
+  "build": {
+    "appId": "io.dafacility.ocr",
+    "productName": "OCR Console",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "requestedExecutionLevel": "asInvoker",
+      "signtoolOptions": {
+        "certificateFile": "build/certs/windows-dev-signing.p12",
+        "certificatePassword": "",
+        "publisherName": "OCR Console Local Dev",
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "rfc3161TimeStampServer": null,
+        "timeStampServer": null
+      }
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-windows-${arch}-portable.${ext}"
+    }
   }
 }

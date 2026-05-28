@@ -9,20 +9,26 @@ import {
 } from 'solid-js'
 import type { JSX } from 'solid-js'
 import './App.css'
-import { pickDirectoryTarget, pickFileTarget, writeOutputFiles } from './lib/output'
+import { pickDirectoryTarget, pickFileTarget, writeOutputTarget } from './lib/output'
+import { detectTextBoxes, ensurePaddleOcr, recognizePaddleZones } from './lib/paddle'
+import type { PaddleMetrics, PaddleOcrStatus } from './lib/paddle'
 import {
   clamp,
   detectCandidates,
   drawPixelsToCanvas,
   fitWithin,
   processFrame,
+  recognizeDigitZone,
   recognizeZone,
   sampleColor,
 } from './lib/vision'
 import type {
   CandidateGlyph,
   ColorFilter,
+  DigitDetection,
   GlyphTemplate,
+  LexiconGroup,
+  MorphologySettings,
   OutputTarget,
   Point,
   ProcessedFrame,
@@ -37,24 +43,40 @@ const STORAGE_KEYS = {
   invert: 'web-rewrite:invert',
   deviceId: 'web-rewrite:device-id',
   colors: 'web-rewrite:colors',
+  processingEnabled: 'web-rewrite:processing-enabled',
+  morphology: 'web-rewrite:morphology',
+  lexiconGroups: 'web-rewrite:lexicon-groups',
+  selectedLexiconGroupId: 'web-rewrite:selected-lexicon-group-id',
 }
 
 const ZONE_COLORS = ['#d44d1c', '#1859c4', '#107362', '#9b3f16', '#735b08', '#8d2459']
+const DEFAULT_LEXICON_GROUP_ID = 'default'
+const ZONE_BORDER_WIDTH = 4
+const ZONE_TAB_HEIGHT = 24
+const ZONE_TAB_PADDING_X = 10
+const ZONE_TAB_CHAR_WIDTH = 7.35
 
-type SectionId = 'capture' | 'corners' | 'colors' | 'zones' | 'lexicon' | 'output'
+type SectionId = 'capture' | 'corners' | 'colors' | 'morphology' | 'zones' | 'lexicon' | 'output'
+type CursorMode = 'normal' | '4corner' | 'zones'
+type CameraState = 'idle' | 'granted' | 'denied' | 'disconnected'
 
 function AccordionSection(props: {
   id: SectionId
   title: string
   active: boolean
+  disabled?: boolean
   onToggle: (id: SectionId) => void
   children: JSX.Element
 }) {
   return (
     <section class="accordion-section">
-      <button class={`accordion-trigger ${props.active ? 'active' : ''}`} onClick={() => props.onToggle(props.id)}>
+      <button
+        class={`accordion-trigger ${props.active ? 'active' : ''}`}
+        disabled={props.disabled}
+        onClick={() => props.onToggle(props.id)}
+      >
         <span>{props.title}</span>
-        <span class="accordion-state">{props.active ? 'open' : 'closed'}</span>
+        <span class="accordion-state">{props.disabled ? 'disabled' : props.active ? 'open' : 'closed'}</span>
       </button>
       <Show when={props.active}>
         <div class="accordion-body">{props.children}</div>
@@ -103,6 +125,15 @@ function saveStored(key: string, value: unknown) {
   window.localStorage.setItem(key, JSON.stringify(value))
 }
 
+function resetStoredSettings() {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  Object.values(STORAGE_KEYS).forEach((key) => window.localStorage.removeItem(key))
+  window.location.reload()
+}
+
 function uid(prefix: string) {
   return `${prefix}-${crypto.randomUUID().slice(0, 8)}`
 }
@@ -124,30 +155,130 @@ function describeHsv(hsv: [number, number, number]) {
   return `hsv(${Math.round(hsv[0])}, ${Math.round(hsv[1] * 100)}%, ${Math.round(hsv[2] * 100)}%)`
 }
 
+function isPaddleZone(zone: Zone) {
+  return zone.ocrEngine === 'paddle'
+}
+
+function isMnistZone(zone: Zone) {
+  return zone.ocrEngine === 'mnist'
+}
+
+function isLexiconZone(zone: Zone) {
+  return (zone.ocrEngine ?? 'glyph') === 'glyph'
+}
+
+function zoneEngineLabel(zone: Zone) {
+  if (zone.ocrEngine === 'paddle') {
+    return 'paddle'
+  }
+
+  if (zone.ocrEngine === 'mnist') {
+    return 'mnist'
+  }
+
+  return 'lexicon'
+}
+
+function estimatedLabelWidth(text: string) {
+  return Math.ceil(text.length * ZONE_TAB_CHAR_WIDTH + ZONE_TAB_PADDING_X * 2)
+}
+
+function zoneTabText(zone: Zone) {
+  const withMethod = `${zone.label} · ${zoneEngineLabel(zone)}`
+
+  return estimatedLabelWidth(withMethod) <= zone.width ? withMethod : zone.label
+}
+
+function zoneTabWidth(zone: Zone) {
+  return clamp(estimatedLabelWidth(zoneTabText(zone)), 36, Math.max(36, zone.width))
+}
+
+function normalizeLexiconGroups(groups: LexiconGroup[]) {
+  const normalized = groups.length > 0 ? groups : [{ id: DEFAULT_LEXICON_GROUP_ID, name: 'Default' }]
+  return normalized.some((group) => group.id === DEFAULT_LEXICON_GROUP_ID)
+    ? normalized
+    : [{ id: DEFAULT_LEXICON_GROUP_ID, name: 'Default' }, ...normalized]
+}
+
+function normalizeLexicon(templates: GlyphTemplate[]) {
+  return templates.map((template) => ({
+    ...template,
+    groupId: template.groupId ?? DEFAULT_LEXICON_GROUP_ID,
+  }))
+}
+
+function groupName(groups: LexiconGroup[], id?: string) {
+  return groups.find((group) => group.id === (id ?? DEFAULT_LEXICON_GROUP_ID))?.name ?? 'Default'
+}
+
+function resolveCursorMode(section: SectionId): CursorMode {
+  if (section === 'corners') {
+    return '4corner'
+  }
+
+  if (section === 'zones') {
+    return 'zones'
+  }
+
+  return 'normal'
+}
+
+function describePaddleMetrics(metrics: PaddleMetrics | null) {
+  if (!metrics) {
+    return 'no inference yet'
+  }
+
+  const provider = metrics.runtime
+    ? `${metrics.runtime.detProvider}/${metrics.runtime.recProvider}`
+    : 'provider unknown'
+
+  return `${Math.round(metrics.totalMs)}ms total · ${Math.round(metrics.detMs)}ms det · ${Math.round(metrics.recMs)}ms rec · ${metrics.recognizedCount}/${metrics.detectedBoxes} read · ${provider}`
+}
+
 function App() {
+  const storedDeviceId = loadStored<string | null>(STORAGE_KEYS.deviceId, null)
   const [devices, setDevices] = createSignal<MediaDeviceInfo[]>([])
-  const [selectedDeviceId, setSelectedDeviceId] = createSignal(
-    loadStored<string | null>(STORAGE_KEYS.deviceId, null),
-  )
-  const [permissionState, setPermissionState] = createSignal<'idle' | 'granted' | 'denied'>('idle')
+  const [selectedDeviceId, setSelectedDeviceId] = createSignal(storedDeviceId)
+  const [activeDeviceId, setActiveDeviceId] = createSignal<string | null>(null)
+  const [cameraState, setCameraState] = createSignal<CameraState>('idle')
+  const [showCameraRecovery, setShowCameraRecovery] = createSignal(false)
   const [points, setPoints] = createSignal<Point[]>(loadStored<Point[]>(STORAGE_KEYS.points, []))
   const [zones, setZones] = createSignal<Zone[]>(loadStored<Zone[]>(STORAGE_KEYS.zones, []))
+  const [lexiconGroups, setLexiconGroups] = createSignal<LexiconGroup[]>(
+    normalizeLexiconGroups(loadStored<LexiconGroup[]>(STORAGE_KEYS.lexiconGroups, [])),
+  )
+  const [selectedLexiconGroupId, setSelectedLexiconGroupId] = createSignal(
+    loadStored<string>(STORAGE_KEYS.selectedLexiconGroupId, DEFAULT_LEXICON_GROUP_ID),
+  )
   const [lexicon, setLexicon] = createSignal<GlyphTemplate[]>(
-    loadStored<GlyphTemplate[]>(STORAGE_KEYS.lexicon, []),
+    normalizeLexicon(loadStored<GlyphTemplate[]>(STORAGE_KEYS.lexicon, [])),
   )
   const [colorFilters, setColorFilters] = createSignal<ColorFilter[]>(
     loadStored<ColorFilter[]>(STORAGE_KEYS.colors, []),
   )
+  const [processingEnabled, setProcessingEnabled] = createSignal(
+    loadStored<boolean>(STORAGE_KEYS.processingEnabled, true),
+  )
   const [threshold, setThreshold] = createSignal(loadStored<number>(STORAGE_KEYS.threshold, 172))
   const [invert, setInvert] = createSignal(loadStored<boolean>(STORAGE_KEYS.invert, false))
+  const [morphology, setMorphology] = createSignal<MorphologySettings>(
+    loadStored<MorphologySettings>(STORAGE_KEYS.morphology, { erode: 0, dilate: 0 }),
+  )
   const [results, setResults] = createSignal<Record<string, string>>({})
+  const [digitDetections, setDigitDetections] = createSignal<Record<string, DigitDetection[]>>({})
   const [drawMode, setDrawMode] = createSignal(false)
   const [selectedZoneId, setSelectedZoneId] = createSignal<string | null>(null)
   const [candidateGlyphs, setCandidateGlyphs] = createSignal<CandidateGlyph[]>([])
   const [candidateLetters, setCandidateLetters] = createSignal<Record<string, string>>({})
-  const [outputTarget, setOutputTarget] = createSignal<OutputTarget>(null)
-  const [outputMessage, setOutputMessage] = createSignal('No output target selected.')
+  const [outputTargets, setOutputTargets] = createSignal<OutputTarget[]>([])
+  const [outputMessages, setOutputMessages] = createSignal<Record<string, string>>({})
+  const [paddleStatus, setPaddleStatus] = createSignal<PaddleOcrStatus>('unloaded')
+  const [paddleMessage, setPaddleMessage] = createSignal('PaddleOCR is not loaded.')
+  const [paddleLoadPercent, setPaddleLoadPercent] = createSignal(0)
+  const [paddleMetrics, setPaddleMetrics] = createSignal<PaddleMetrics | null>(null)
   const [frameSize, setFrameSize] = createSignal({ width: 720, height: 405 })
+  const [cameraResolution, setCameraResolution] = createSignal({ width: 0, height: 0 })
+  const [streamActive, setStreamActive] = createSignal(false)
   const [activeSection, setActiveSection] = createSignal<SectionId>('capture')
   const [viewerHostSize, setViewerHostSize] = createSignal({ width: 960, height: 540 })
 
@@ -161,9 +292,11 @@ function App() {
   let latestFrame: ProcessedFrame | null = null
   let lastPreviewAt = 0
   let lastRecognitionAt = 0
+  let recognitionInFlight = false
+  let paddleRecognitionSuppressed = false
   let writingOutput = false
   let queuedOutput = false
-  const lastWrittenCache = new Map<string, string>()
+  const lastWrittenCaches = new Map<string, Map<string, string>>()
 
   const rawBuffer = document.createElement('canvas')
   const transformedBuffer = document.createElement('canvas')
@@ -181,6 +314,48 @@ function App() {
   } | null>(null)
 
   const selectedZone = createMemo(() => zones().find((zone) => zone.id === selectedZoneId()) ?? null)
+  const activeOutputCount = createMemo(() => outputTargets().filter((target) => target.enabled).length)
+  const cameraOnline = createMemo(
+    () => cameraState() === 'granted' && streamActive() && cameraResolution().width > 0 && cameraResolution().height > 0,
+  )
+  const selectedDeviceAvailable = createMemo(() => {
+    const selected = selectedDeviceId()
+    return Boolean(selected && devices().some((device) => device.deviceId === selected))
+  })
+  const selectedDeviceMissing = createMemo(() => Boolean(selectedDeviceId() && !selectedDeviceAvailable()))
+  const canUseCameraPicker = createMemo(() => devices().length > 0 || selectedDeviceMissing())
+  const cameraStatusText = createMemo(() => {
+    if (cameraOnline()) {
+      return 'on'
+    }
+
+    if (cameraState() === 'disconnected' || selectedDeviceMissing()) {
+      return 'disconnected'
+    }
+
+    return cameraState()
+  })
+  const cameraActionLabel = createMemo(() => {
+    if (!selectedDeviceAvailable()) {
+      return 'open'
+    }
+
+    if (cameraOnline() && activeDeviceId() === selectedDeviceId()) {
+      return 'close'
+    }
+
+    if (cameraOnline() && activeDeviceId() !== selectedDeviceId()) {
+      return 'switch'
+    }
+
+    return 'open'
+  })
+  const cursorMode = createMemo(() => resolveCursorMode(activeSection()))
+  const selectedGroupTemplates = createMemo(() =>
+    lexicon().filter((glyph) => (glyph.groupId ?? DEFAULT_LEXICON_GROUP_ID) === selectedLexiconGroupId()),
+  )
+  const selectedGroupName = createMemo(() => groupName(lexiconGroups(), selectedLexiconGroupId()))
+  const paddleFrameSource = createMemo(() => (processingEnabled() ? 'processed' : 'source'))
   const supportsFileAccess = createMemo(
     () => typeof window !== 'undefined' && (!!window.showDirectoryPicker || !!window.showSaveFilePicker),
   )
@@ -205,12 +380,34 @@ function App() {
   const showingProcessed = createMemo(
     () => !['capture', 'corners'].includes(activeSection()),
   )
+  const stageSize = createMemo(() => {
+    const host = viewerHostSize()
+    const aspect = stageAspect()
+    const widthFromHeight = host.height * aspect
+    const heightFromWidth = host.width / aspect
+
+    if (widthFromHeight <= host.width) {
+      return {
+        width: Math.max(1, Math.floor(widthFromHeight)),
+        height: Math.max(1, Math.floor(host.height)),
+      }
+    }
+
+    return {
+      width: Math.max(1, Math.floor(host.width)),
+      height: Math.max(1, Math.floor(heightFromWidth)),
+    }
+  })
 
   createEffect(() => saveStored(STORAGE_KEYS.points, points()))
   createEffect(() => saveStored(STORAGE_KEYS.zones, zones()))
   createEffect(() => saveStored(STORAGE_KEYS.lexicon, lexicon()))
+  createEffect(() => saveStored(STORAGE_KEYS.lexiconGroups, lexiconGroups()))
+  createEffect(() => saveStored(STORAGE_KEYS.selectedLexiconGroupId, selectedLexiconGroupId()))
   createEffect(() => saveStored(STORAGE_KEYS.threshold, threshold()))
   createEffect(() => saveStored(STORAGE_KEYS.invert, invert()))
+  createEffect(() => saveStored(STORAGE_KEYS.processingEnabled, processingEnabled()))
+  createEffect(() => saveStored(STORAGE_KEYS.morphology, morphology()))
   createEffect(() => saveStored(STORAGE_KEYS.deviceId, selectedDeviceId()))
   createEffect(() => saveStored(STORAGE_KEYS.colors, colorFilters()))
 
@@ -231,8 +428,29 @@ function App() {
     }
   })
 
+  createEffect(() => {
+    if (lexiconGroups().some((group) => group.id === selectedLexiconGroupId())) {
+      return
+    }
+
+    setSelectedLexiconGroupId(lexiconGroups()[0]?.id ?? DEFAULT_LEXICON_GROUP_ID)
+  })
+
+  createEffect(() => {
+    if (!cameraOnline() && activeSection() !== 'capture') {
+      setActiveSection('capture')
+    }
+  })
+
+  createEffect(() => {
+    if (!processingEnabled() && activeSection() === 'morphology') {
+      setActiveSection('colors')
+    }
+  })
+
   async function flushOutputWrites(snapshot = results()) {
-    if (!outputTarget()) {
+    const activeTargets = outputTargets().filter((target) => target.enabled)
+    if (activeTargets.length === 0) {
       return
     }
 
@@ -244,11 +462,20 @@ function App() {
     writingOutput = true
 
     try {
-      const message = await writeOutputFiles(outputTarget(), zones(), snapshot, lastWrittenCache)
-      setOutputMessage(message)
+      for (const target of activeTargets) {
+        const cache = lastWrittenCaches.get(target.id) ?? new Map<string, string>()
+        lastWrittenCaches.set(target.id, cache)
+
+        try {
+          const message = await writeOutputTarget(target, zones(), snapshot, cache)
+          setOutputMessages((current) => ({ ...current, [target.id]: message }))
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Output write failed.'
+          setOutputMessages((current) => ({ ...current, [target.id]: message }))
+        }
+      }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Failed to write OCR output.'
-      setOutputMessage(message)
+      console.error(error)
     } finally {
       writingOutput = false
       if (queuedOutput) {
@@ -260,29 +487,57 @@ function App() {
 
   async function refreshDevices() {
     if (!navigator.mediaDevices?.enumerateDevices) {
-      return
+      return []
     }
 
     const allDevices = await navigator.mediaDevices.enumerateDevices()
     const cameras = allDevices.filter((device) => device.kind === 'videoinput')
     setDevices(cameras)
 
+    if (selectedDeviceMissing()) {
+      setCameraState((current) => (current === 'denied' ? current : 'disconnected'))
+      return cameras
+    }
+
     if (!selectedDeviceId() && cameras[0]) {
       setSelectedDeviceId(cameras[0].deviceId)
     }
+
+    return cameras
   }
 
   async function stopStream() {
     stream?.getTracks().forEach((track) => track.stop())
     stream = null
+    latestFrame = null
+    setStreamActive(false)
+    setActiveDeviceId(null)
+    setCameraResolution({ width: 0, height: 0 })
     if (video) {
       video.srcObject = null
     }
   }
 
-  async function startStream(deviceId = selectedDeviceId()) {
-    if (!navigator.mediaDevices?.getUserMedia) {
+  function markCameraOff() {
+    if (!streamActive() && cameraResolution().width === 0 && cameraResolution().height === 0) {
       return
+    }
+
+    latestFrame = null
+    setStreamActive(false)
+    setCameraResolution({ width: 0, height: 0 })
+  }
+
+  function isStreamLive() {
+    return Boolean(stream?.getVideoTracks().some((track) => track.readyState === 'live' && track.enabled))
+  }
+
+  async function startStream(
+    deviceId = selectedDeviceId(),
+    options: { showRecoveryOnFailure?: boolean } = {},
+  ) {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return false
     }
 
     try {
@@ -300,20 +555,69 @@ function App() {
           }
 
       stream = await navigator.mediaDevices.getUserMedia(constraints)
+      stream.getVideoTracks().forEach((track) => {
+        track.addEventListener('ended', markCameraOff)
+        track.addEventListener('mute', markCameraOff)
+      })
       video.srcObject = stream
       await video.play()
-      setPermissionState('granted')
+      const openedDeviceId = stream.getVideoTracks()[0]?.getSettings().deviceId ?? deviceId ?? null
+      setActiveDeviceId(openedDeviceId)
+      setCameraState('granted')
+      if (!selectedDeviceId() && openedDeviceId) {
+        setSelectedDeviceId(openedDeviceId)
+      }
+      setShowCameraRecovery(false)
       await refreshDevices()
+      return true
     } catch (error) {
-      setPermissionState('denied')
+      setCameraState(error instanceof DOMException && error.name === 'OverconstrainedError' ? 'disconnected' : 'denied')
+      if (options.showRecoveryOnFailure) {
+        setShowCameraRecovery(true)
+      }
+      markCameraOff()
       console.error(error)
+      return false
     }
+  }
+
+  function handleCameraAction() {
+    if (cameraOnline() && activeDeviceId() === selectedDeviceId()) {
+      void stopStream()
+      return
+    }
+
+    if (selectedDeviceAvailable()) {
+      void startStream(selectedDeviceId())
+    }
+  }
+
+  function handleDeviceSelection(deviceId: string) {
+    setSelectedDeviceId(deviceId || null)
+  }
+
+  async function retryStoredCameraSetup() {
+    const cameras = await refreshDevices()
+    const selected = selectedDeviceId()
+    if (!selected || !cameras.some((device) => device.deviceId === selected)) {
+      setCameraState('disconnected')
+      setShowCameraRecovery(true)
+      return
+    }
+
+    await startStream(selected, { showRecoveryOnFailure: true })
   }
 
   function updateCanvasSize() {
     if (!video.videoWidth || !video.videoHeight) {
       return
     }
+
+    setCameraResolution({
+      width: video.videoWidth,
+      height: video.videoHeight,
+    })
+    setStreamActive(isStreamLive())
 
     const fitted = fitWithin(video.videoWidth, video.videoHeight, 1280, 960)
     setFrameSize(fitted)
@@ -373,23 +677,90 @@ function App() {
     drawBufferCover(rawBuffer, mainCanvas)
   }
 
-  function runRecognition(frame: ProcessedFrame) {
-    const next = Object.fromEntries(
-      zones().map((zone) => [zone.id, recognizeZone(frame, zone, lexicon())]),
-    )
-    setResults(next)
-    if (outputTarget()) {
-      void flushOutputWrites(next)
+  async function runRecognition(frame: ProcessedFrame) {
+    if (recognitionInFlight) {
+      return
+    }
+
+    recognitionInFlight = true
+    const activeZones = zones()
+    const paddleZones = activeZones.filter(isPaddleZone)
+    const next: Record<string, string> = {}
+    const nextDigitDetections: Record<string, DigitDetection[]> = {}
+
+    activeZones
+      .filter((zone) => !isPaddleZone(zone))
+      .forEach((zone) => {
+        if (isMnistZone(zone)) {
+          const recognized = recognizeDigitZone(frame, zone)
+          next[zone.id] = recognized.text
+          nextDigitDetections[zone.id] = recognized.detections
+          return
+        }
+
+        next[zone.id] = recognizeZone(
+          frame,
+          zone,
+          lexicon().filter(
+            (glyph) =>
+              (glyph.groupId ?? DEFAULT_LEXICON_GROUP_ID) ===
+              (zone.lexiconGroupId ?? DEFAULT_LEXICON_GROUP_ID),
+          ),
+        )
+      })
+
+    try {
+      if (paddleZones.length > 0 && !paddleRecognitionSuppressed) {
+        setPaddleStatus(paddleStatus() === 'unloaded' ? 'loading' : 'running')
+        setPaddleMessage(`Reading ${paddleZones.length} PaddleOCR zone${paddleZones.length === 1 ? '' : 's'}.`)
+
+        const paddle = await recognizePaddleZones(frame, paddleZones, paddleFrameSource())
+        Object.assign(next, paddle.results)
+        setPaddleMetrics(paddle.metrics)
+        setPaddleStatus('ready')
+        setPaddleMessage('PaddleOCR ready.')
+      }
+
+      setResults(next)
+      setDigitDetections(nextDigitDetections)
+      if (activeOutputCount() > 0) {
+        void flushOutputWrites(next)
+      }
+    } catch (error) {
+      paddleRecognitionSuppressed = true
+      setPaddleStatus('failed')
+      setPaddleMessage(error instanceof Error ? error.message : 'PaddleOCR recognition failed.')
+      setResults(next)
+      setDigitDetections(nextDigitDetections)
+    } finally {
+      recognitionInFlight = false
     }
   }
 
   function renderLoop(now: number) {
-    if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    if (!isStreamLive()) {
+      markCameraOff()
+    } else if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && video.videoWidth && video.videoHeight) {
+      if (!streamActive()) {
+        setStreamActive(true)
+      }
+      if (cameraResolution().width !== video.videoWidth || cameraResolution().height !== video.videoHeight) {
+        updateCanvasSize()
+      }
+
       if (now - lastPreviewAt >= 1000 / 12) {
         rawContext.drawImage(video, 0, 0, frameSize().width, frameSize().height)
         const sourceImage = rawContext.getImageData(0, 0, frameSize().width, frameSize().height)
 
-        latestFrame = processFrame(sourceImage, points(), threshold(), invert(), colorFilters())
+        latestFrame = processFrame(
+          sourceImage,
+          points(),
+          threshold(),
+          invert(),
+          processingEnabled() ? colorFilters() : [],
+          processingEnabled() ? morphology() : { erode: 0, dilate: 0 },
+          processingEnabled(),
+        )
 
         transformedContext.putImageData(
           new ImageData(Uint8ClampedArray.from(latestFrame.sourceRgba), latestFrame.width, latestFrame.height),
@@ -405,8 +776,8 @@ function App() {
         lastPreviewAt = now
       }
 
-      if (latestFrame && now - lastRecognitionAt >= 500) {
-        runRecognition(latestFrame)
+      if (latestFrame && now - lastRecognitionAt >= 1000) {
+        void runRecognition(latestFrame)
         lastRecognitionAt = now
       }
     }
@@ -447,7 +818,7 @@ function App() {
   }
 
   function handleSourcePointerDown(event: PointerEvent & { currentTarget: SVGSVGElement }) {
-    if (showingProcessed()) {
+    if (activeSection() !== 'corners') {
       return
     }
 
@@ -472,7 +843,7 @@ function App() {
 
   function handleSourcePointerMove(event: PointerEvent & { currentTarget: SVGSVGElement }) {
     const index = draggingPointIndex()
-    if (index === null || showingProcessed()) {
+    if (index === null || activeSection() !== 'corners') {
       return
     }
 
@@ -488,7 +859,7 @@ function App() {
   }
 
   function handleProcessedPointerDown(event: PointerEvent & { currentTarget: SVGSVGElement }) {
-    if (!showingProcessed() || activeSection() === 'colors') {
+    if (!showingProcessed() || !['zones', 'lexicon'].includes(activeSection())) {
       return
     }
 
@@ -531,7 +902,7 @@ function App() {
   }
 
   function handleProcessedPointerMove(event: PointerEvent & { currentTarget: SVGSVGElement }) {
-    if (!showingProcessed() || activeSection() === 'colors') {
+    if (!showingProcessed() || activeSection() !== 'zones') {
       return
     }
 
@@ -582,6 +953,8 @@ function App() {
           width: rect.width,
           height: rect.height,
           color: ZONE_COLORS[index % ZONE_COLORS.length],
+          ocrEngine: 'glyph',
+          lexiconGroupId: selectedLexiconGroupId(),
         }
         setZones([...zones(), newZone])
         setSelectedZoneId(newZone.id)
@@ -595,7 +968,7 @@ function App() {
   }
 
   function handleColorPick(event: PointerEvent & { currentTarget: HTMLDivElement }) {
-    if (activeSection() !== 'colors' || !latestFrame) {
+    if (activeSection() !== 'colors' || !latestFrame || !processingEnabled()) {
       return
     }
 
@@ -616,10 +989,62 @@ function App() {
     setZones(zones().map((zone) => (zone.id === id ? { ...zone, label } : zone)))
   }
 
+  function updateZoneEngine(id: string, engine: 'glyph' | 'paddle' | 'mnist') {
+    paddleRecognitionSuppressed = false
+    setZones(zones().map((zone) => (zone.id === id ? { ...zone, ocrEngine: engine } : zone)))
+  }
+
+  function updateZoneLexiconGroup(id: string, groupId: string) {
+    setZones(zones().map((zone) => (zone.id === id ? { ...zone, lexiconGroupId: groupId } : zone)))
+  }
+
   function removeZone(id: string) {
     setZones(zones().filter((zone) => zone.id !== id))
     if (selectedZoneId() === id) {
       setSelectedZoneId(null)
+    }
+  }
+
+  async function autoDetectPaddleZones() {
+    if (!latestFrame) {
+      setPaddleMessage('Start the camera and wait for a processed frame before auto-detecting zones.')
+      return
+    }
+
+    paddleRecognitionSuppressed = false
+    setPaddleStatus(paddleStatus() === 'unloaded' ? 'loading' : 'running')
+    setPaddleMessage('Running PaddleOCR detection on the current frame.')
+
+    try {
+      const detected = await detectTextBoxes(latestFrame, paddleFrameSource())
+      setPaddleMetrics(detected.metrics)
+
+      if (detected.boxes.length === 0) {
+        setPaddleStatus('ready')
+        setPaddleMessage('PaddleOCR found no text boxes. Existing zones were preserved.')
+        return
+      }
+
+      const nextZones: Zone[] = detected.boxes.map((box, index) => ({
+        id: uid('zone'),
+        label: `ocr-${index + 1}`,
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height,
+        color: ZONE_COLORS[index % ZONE_COLORS.length],
+        ocrEngine: 'paddle',
+        lexiconGroupId: selectedLexiconGroupId(),
+      }))
+
+      setZones(nextZones)
+      setSelectedZoneId(nextZones[0]?.id ?? null)
+      setPaddleStatus('ready')
+      setPaddleMessage(`Detected ${nextZones.length} PaddleOCR zone${nextZones.length === 1 ? '' : 's'}.`)
+      void runRecognition(latestFrame)
+    } catch (error) {
+      setPaddleStatus('failed')
+      setPaddleMessage(error instanceof Error ? error.message : 'PaddleOCR detection failed.')
     }
   }
 
@@ -629,7 +1054,7 @@ function App() {
 
   function detectGlyphsForSelectedZone() {
     if (!latestFrame || !selectedZone()) {
-      setOutputMessage('Select a zone and wait for a processed frame before detecting glyphs.')
+      setOutputMessages((current) => ({ ...current, lexicon: 'Select a zone and wait for a processed frame before detecting glyphs.' }))
       return
     }
 
@@ -647,6 +1072,7 @@ function App() {
     const template: GlyphTemplate = {
       id: uid('glyph'),
       letter,
+      groupId: selectedLexiconGroupId(),
       width: candidate.normalizedWidth,
       height: candidate.normalizedHeight,
       pixels: candidate.normalized,
@@ -665,6 +1091,70 @@ function App() {
     setLexicon(lexicon().filter((glyph) => glyph.id !== id))
   }
 
+  function addLexiconGroup() {
+    const index = lexiconGroups().length + 1
+    const group = {
+      id: uid('lexicon-group'),
+      name: `Group ${index}`,
+    }
+    setLexiconGroups([...lexiconGroups(), group])
+    setSelectedLexiconGroupId(group.id)
+  }
+
+  function renameLexiconGroup(id: string, name: string) {
+    setLexiconGroups(
+      lexiconGroups().map((group) => (group.id === id ? { ...group, name: name || 'Untitled' } : group)),
+    )
+  }
+
+  function removeLexiconGroup(id: string) {
+    if (id === DEFAULT_LEXICON_GROUP_ID || lexiconGroups().length <= 1) {
+      return
+    }
+
+    setLexiconGroups(lexiconGroups().filter((group) => group.id !== id))
+    setLexicon(lexicon().filter((glyph) => (glyph.groupId ?? DEFAULT_LEXICON_GROUP_ID) !== id))
+    setZones(
+      zones().map((zone) =>
+        (zone.lexiconGroupId ?? DEFAULT_LEXICON_GROUP_ID) === id
+          ? { ...zone, lexiconGroupId: DEFAULT_LEXICON_GROUP_ID }
+          : zone,
+      ),
+    )
+  }
+
+  async function preloadPaddleModels() {
+    if (paddleStatus() === 'ready' || paddleStatus() === 'loading') {
+      return
+    }
+
+    setPaddleStatus('loading')
+    setPaddleLoadPercent(2)
+    setPaddleMessage('Loading PaddleOCR models on startup.')
+
+    let syntheticPercent = 2
+    const progressTimer = window.setInterval(() => {
+      syntheticPercent = Math.min(94, syntheticPercent + (syntheticPercent < 70 ? 3 : 1))
+      setPaddleLoadPercent((current) => Math.max(current, syntheticPercent))
+    }, 350)
+
+    try {
+      await ensurePaddleOcr((progress) => {
+        setPaddleLoadPercent(progress.percent)
+        setPaddleMessage(progress.message)
+      })
+      window.clearInterval(progressTimer)
+      setPaddleLoadPercent(100)
+      setPaddleStatus('ready')
+      setPaddleMessage('PaddleOCR models loaded on startup.')
+    } catch (error) {
+      window.clearInterval(progressTimer)
+      setPaddleStatus('failed')
+      setPaddleLoadPercent(0)
+      setPaddleMessage(error instanceof Error ? error.message : 'PaddleOCR startup load failed.')
+    }
+  }
+
   function updateColorFilter(
     id: string,
     changes: Partial<Pick<ColorFilter, 'rgbTolerance' | 'hsvTolerance'>>,
@@ -674,45 +1164,115 @@ function App() {
     )
   }
 
+  function updateMorphology(changes: Partial<MorphologySettings>) {
+    setMorphology({ ...morphology(), ...changes })
+  }
+
   function removeColorFilter(id: string) {
     setColorFilters(colorFilters().filter((filter) => filter.id !== id))
   }
 
-  async function chooseOutputDirectory() {
+  async function addOutputDirectory() {
     try {
-      const target = await pickDirectoryTarget()
-      lastWrittenCache.clear()
-      setOutputTarget(target)
-      setOutputMessage(`Writing one file per OCR zone into ${target.name}.`)
+      const target = await pickDirectoryTarget(uid('output'))
+      lastWrittenCaches.set(target.id, new Map<string, string>())
+      setOutputTargets([...outputTargets(), target])
+      setOutputMessages((current) => ({ ...current, [target.id]: `Writing one file per OCR zone into ${target.name}.` }))
       if (Object.keys(results()).length > 0) {
         void flushOutputWrites(results())
       }
     } catch (error) {
-      setOutputMessage(error instanceof Error ? error.message : 'Directory selection failed.')
+      const id = uid('output-error')
+      setOutputMessages((current) => ({ ...current, [id]: error instanceof Error ? error.message : 'Directory selection failed.' }))
     }
   }
 
-  async function chooseOutputFile() {
+  async function addOutputFile() {
     try {
-      const target = await pickFileTarget()
-      lastWrittenCache.clear()
-      setOutputTarget(target)
-      setOutputMessage(`Writing OCR output into ${target.name}.`)
+      const target = await pickFileTarget(uid('output'))
+      lastWrittenCaches.set(target.id, new Map<string, string>())
+      setOutputTargets([...outputTargets(), target])
+      setOutputMessages((current) => ({ ...current, [target.id]: `Writing OCR output into ${target.name}.` }))
       if (Object.keys(results()).length > 0) {
         void flushOutputWrites(results())
       }
     } catch (error) {
-      setOutputMessage(error instanceof Error ? error.message : 'File selection failed.')
+      const id = uid('output-error')
+      setOutputMessages((current) => ({ ...current, [id]: error instanceof Error ? error.message : 'File selection failed.' }))
     }
+  }
+
+  function addWebhookOutput() {
+    const target: OutputTarget = {
+      id: uid('output'),
+      type: 'webhook',
+      enabled: false,
+      url: '',
+    }
+    setOutputTargets([...outputTargets(), target])
+    setOutputMessages((current) => ({ ...current, [target.id]: 'Enter a URL, then resume.' }))
+  }
+
+  function updateWebhookUrl(id: string, url: string) {
+    lastWrittenCaches.delete(id)
+    setOutputTargets(
+      outputTargets().map((target) => (target.id === id && target.type === 'webhook' ? { ...target, url } : target)),
+    )
+  }
+
+  function toggleOutputTarget(id: string) {
+    setOutputTargets(
+      outputTargets().map((target) => (target.id === id ? { ...target, enabled: !target.enabled } : target)),
+    )
+    const target = outputTargets().find((candidate) => candidate.id === id)
+    if (target?.enabled) {
+      setOutputMessages((current) => ({ ...current, [id]: 'Paused.' }))
+      return
+    }
+    setOutputMessages((current) => ({ ...current, [id]: 'Resumed.' }))
+    void flushOutputWrites(results())
+  }
+
+  function removeOutputTarget(id: string) {
+    setOutputTargets(outputTargets().filter((target) => target.id !== id))
+    lastWrittenCaches.delete(id)
+    setOutputMessages((current) => {
+      const next = { ...current }
+      delete next[id]
+      return next
+    })
   }
 
   function toggleSection(section: SectionId) {
+    if (section !== 'capture' && !cameraOnline()) {
+      setActiveSection('capture')
+      return
+    }
+
+    if (section === 'morphology' && !processingEnabled()) {
+      setActiveSection('colors')
+      return
+    }
+
     setActiveSection(section)
   }
 
   onMount(() => {
-    void refreshDevices()
-    void startStream()
+    void (async () => {
+      const cameras = await refreshDevices()
+      if (!storedDeviceId) {
+        return
+      }
+
+      if (!cameras.some((device) => device.deviceId === storedDeviceId)) {
+        setCameraState('disconnected')
+        setShowCameraRecovery(true)
+        return
+      }
+
+      await startStream(storedDeviceId, { showRecoveryOnFailure: true })
+    })()
+    void preloadPaddleModels()
 
     const resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0]
@@ -748,11 +1308,13 @@ function App() {
           <h1>Deskframe Reader</h1>
         </div>
         <div class="headline-status">
-          <span>camera {permissionState()}</span>
+          <span>camera {cameraStatusText()}</span>
           <span>{zones().length} zones</span>
           <span>{lexicon().length} glyphs</span>
-          <span>{colorFilters().length} colors</span>
-          <span>output {outputTarget() ? outputTarget()!.type : 'off'}</span>
+          <span>{lexiconGroups().length} groups</span>
+          <span>processing {processingEnabled() ? 'on' : 'off'}</span>
+          <span>model {paddleStatus()} {paddleLoadPercent()}%</span>
+          <span>outputs {activeOutputCount()}/{outputTargets().length}</span>
         </div>
       </header>
 
@@ -763,110 +1325,186 @@ function App() {
               class="viewer-stage"
               style={{
                 'aspect-ratio': `${stageAspect()}`,
+                width: `${stageSize().width}px`,
+                height: `${stageSize().height}px`,
               }}
             >
               <Show
-                when={activeSection() === 'colors'}
+                when={cameraOnline()}
                 fallback={
-                  <>
-                    <canvas ref={mainCanvas} class="viewer-canvas" />
-
-                    <Show when={!showingProcessed()}>
-                      <svg
-                        class="viewer-overlay"
-                        viewBox={`0 0 ${frameSize().width} ${frameSize().height}`}
-                        onPointerDown={handleSourcePointerDown}
-                        onPointerMove={handleSourcePointerMove}
-                        onPointerUp={handleSourcePointerUp}
-                      >
-                        <Show when={points().length >= 2}>
-                          <polyline
-                            points={points()
-                              .map((point) => `${point.x},${point.y}`)
-                              .join(' ')}
-                            class="path-line"
-                          />
-                        </Show>
-                        <Show when={points().length === 4}>
-                          <polygon
-                            points={points()
-                              .map((point) => `${point.x},${point.y}`)
-                              .join(' ')}
-                            class="path-fill"
-                          />
-                        </Show>
-                        <For each={points()}>
-                          {(point, index) => (
-                            <g>
-                              <circle cx={point.x} cy={point.y} r="10" class="handle-shadow" />
-                              <circle cx={point.x} cy={point.y} r="6" class="handle-core" />
-                              <text x={point.x + 12} y={point.y - 10} class="overlay-label">
-                                {index() + 1}
-                              </text>
-                            </g>
-                          )}
-                        </For>
-                      </svg>
-                    </Show>
-
-                    <Show when={showingProcessed()}>
-                      <svg
-                        class="viewer-overlay"
-                        viewBox={`0 0 ${frameSize().width} ${frameSize().height}`}
-                        onPointerDown={handleProcessedPointerDown}
-                        onPointerMove={handleProcessedPointerMove}
-                        onPointerUp={handleProcessedPointerUp}
-                      >
-                        <For each={zones()}>
-                          {(zone) => (
-                            <g class={selectedZoneId() === zone.id ? 'zone-group selected' : 'zone-group'}>
-                              <rect
-                                x={zone.x}
-                                y={zone.y}
-                                width={zone.width}
-                                height={zone.height}
-                                fill={`${zone.color}18`}
-                                stroke={zone.color}
-                                stroke-width="2"
-                              />
-                              <rect x={zone.x} y={zone.y - 18} width="112" height="18" fill={zone.color} />
-                              <text x={zone.x + 8} y={zone.y - 5} class="overlay-label invert">
-                                {zone.label}
-                              </text>
-                            </g>
-                          )}
-                        </For>
-
-                        <Show when={draftZone()}>
-                          {(draft) => {
-                            const rect = rectFromPoints(draft().start, draft().current)
-                            return (
-                              <rect
-                                x={rect.x}
-                                y={rect.y}
-                                width={rect.width}
-                                height={rect.height}
-                                class="zone-draft"
-                              />
-                            )
-                          }}
-                        </Show>
-                      </svg>
-                    </Show>
-                  </>
+                  <div class="camera-empty-state">
+                    <div class="camera-empty-icon" aria-hidden="true">
+                      <span class="camera-empty-lens" />
+                      <span class="camera-empty-body" />
+                      <span class="camera-empty-slash" />
+                    </div>
+                    <strong>Camera disconnected</strong>
+                    <span>Select an available camera and open it from capture.</span>
+                  </div>
                 }
               >
-                <div class={`split-layout ${splitOrientation()}`}>
-                  <div class="split-pane source-pane">
-                    <canvas ref={splitSourceCanvas} class="viewer-canvas" />
-                    <div class="pane-overlay source-picker" onPointerDown={handleColorPick}>
-                      <span>click to add color</span>
+                <Show
+                  when={activeSection() === 'colors'}
+                  fallback={
+                    <>
+                      <canvas ref={mainCanvas} class="viewer-canvas" />
+                      <div class="resolution-badge">
+                        <span>
+                          {cameraResolution().width || frameSize().width}×{cameraResolution().height || frameSize().height}
+                        </span>
+                        <span>view {frameSize().width}×{frameSize().height}</span>
+                      </div>
+
+                      <Show when={!showingProcessed()}>
+                        <svg
+                          class={`viewer-overlay cursor-${cursorMode()}`}
+                          viewBox={`0 0 ${frameSize().width} ${frameSize().height}`}
+                          onPointerDown={handleSourcePointerDown}
+                          onPointerMove={handleSourcePointerMove}
+                          onPointerUp={handleSourcePointerUp}
+                        >
+                          <Show when={points().length >= 2}>
+                            <polyline
+                              points={points()
+                                .map((point) => `${point.x},${point.y}`)
+                                .join(' ')}
+                              class="path-line"
+                            />
+                          </Show>
+                          <Show when={points().length === 4}>
+                            <polygon
+                              points={points()
+                                .map((point) => `${point.x},${point.y}`)
+                                .join(' ')}
+                              class="path-fill"
+                            />
+                          </Show>
+                          <For each={points()}>
+                            {(point, index) => (
+                              <g>
+                                <circle cx={point.x} cy={point.y} r="10" class="handle-shadow" />
+                                <circle cx={point.x} cy={point.y} r="6" class="handle-core" />
+                                <text x={point.x + 12} y={point.y - 10} class="overlay-label">
+                                  {index() + 1}
+                                </text>
+                              </g>
+                            )}
+                          </For>
+                        </svg>
+                      </Show>
+
+                      <Show when={showingProcessed()}>
+                        <svg
+                          class={`viewer-overlay cursor-${cursorMode()}`}
+                          viewBox={`0 0 ${frameSize().width} ${frameSize().height}`}
+                          onPointerDown={handleProcessedPointerDown}
+                          onPointerMove={handleProcessedPointerMove}
+                          onPointerUp={handleProcessedPointerUp}
+                        >
+                          <For each={zones()}>
+                            {(zone) => (
+                              <g
+                                class={`${selectedZoneId() === zone.id ? 'zone-group selected' : 'zone-group'} ${activeSection() === 'lexicon' ? 'clickable-zone' : ''}`}
+	                              >
+	                                <rect x={zone.x} y={zone.y} width={zone.width} height={zone.height} fill={`${zone.color}18`} />
+	                                <rect
+	                                  x={zone.x - ZONE_BORDER_WIDTH}
+	                                  y={zone.y - ZONE_BORDER_WIDTH}
+	                                  width={zone.width + ZONE_BORDER_WIDTH * 2}
+	                                  height={ZONE_BORDER_WIDTH}
+	                                  fill={zone.color}
+	                                />
+	                                <rect
+	                                  x={zone.x - ZONE_BORDER_WIDTH}
+	                                  y={zone.y - ZONE_BORDER_WIDTH}
+	                                  width={ZONE_BORDER_WIDTH}
+	                                  height={zone.height + ZONE_BORDER_WIDTH * 2}
+	                                  fill={zone.color}
+	                                />
+	                                <rect
+	                                  x={zone.x + zone.width}
+	                                  y={zone.y - ZONE_BORDER_WIDTH}
+	                                  width={ZONE_BORDER_WIDTH}
+	                                  height={zone.height + ZONE_BORDER_WIDTH * 2}
+	                                  fill={zone.color}
+	                                />
+	                                <rect
+	                                  x={zone.x - ZONE_BORDER_WIDTH}
+	                                  y={zone.y + zone.height}
+	                                  width={zone.width + ZONE_BORDER_WIDTH * 2}
+	                                  height={ZONE_BORDER_WIDTH}
+	                                  fill={zone.color}
+	                                />
+	                                <rect
+	                                  x={zone.x - ZONE_BORDER_WIDTH}
+	                                  y={zone.y - ZONE_TAB_HEIGHT - ZONE_BORDER_WIDTH}
+	                                  width={zoneTabWidth(zone)}
+	                                  height={ZONE_TAB_HEIGHT + ZONE_BORDER_WIDTH}
+	                                  fill={zone.color}
+	                                />
+	                                <foreignObject
+	                                  x={zone.x - ZONE_BORDER_WIDTH}
+	                                  y={zone.y - ZONE_TAB_HEIGHT - ZONE_BORDER_WIDTH}
+	                                  width={zoneTabWidth(zone)}
+	                                  height={ZONE_TAB_HEIGHT}
+	                                  class="zone-tab-label"
+	                                >
+	                                  <div title={`${zone.label} · ${zoneEngineLabel(zone)}`}>
+	                                    {zoneTabText(zone)}
+	                                  </div>
+	                                </foreignObject>
+	                                <Show when={isMnistZone(zone)}>
+                                  <For each={digitDetections()[zone.id] ?? []}>
+                                    {(detection) => (
+                                      <g class="digit-detection">
+                                        <rect
+                                          x={detection.x}
+                                          y={detection.y}
+                                          width={detection.width}
+                                          height={detection.height}
+                                        />
+                                        <text x={detection.x + 3} y={Math.max(10, detection.y - 4)}>
+                                          {detection.label}
+                                        </text>
+                                      </g>
+                                    )}
+                                  </For>
+                                </Show>
+                              </g>
+                            )}
+                          </For>
+
+                          <Show when={draftZone()}>
+                            {(draft) => {
+                              const rect = rectFromPoints(draft().start, draft().current)
+                              return (
+                                <rect
+                                  x={rect.x}
+                                  y={rect.y}
+                                  width={rect.width}
+                                  height={rect.height}
+                                  class="zone-draft"
+                                />
+                              )
+                            }}
+                          </Show>
+                        </svg>
+                      </Show>
+                    </>
+                  }
+                >
+                  <div class={`split-layout ${splitOrientation()}`}>
+                    <div class="split-pane source-pane">
+                      <canvas ref={splitSourceCanvas} class="viewer-canvas" />
+                      <div class="pane-overlay source-picker" onPointerDown={handleColorPick}>
+                        <span>click to add color</span>
+                      </div>
+                    </div>
+                    <div class="split-pane">
+                      <canvas ref={splitMaskCanvas} class="viewer-canvas" />
                     </div>
                   </div>
-                  <div class="split-pane">
-                    <canvas ref={splitMaskCanvas} class="viewer-canvas" />
-                  </div>
-                </div>
+                </Show>
               </Show>
             </div>
           </div>
@@ -892,38 +1530,74 @@ function App() {
         <aside class="controls-column">
           <AccordionSection id="capture" title="capture" active={activeSection() === 'capture'} onToggle={toggleSection}>
             <div class="stack">
-              <div class="control-row">
+              <Show when={cameraState() === 'idle' || cameraState() === 'denied'}>
                 <button class="button" onClick={() => void startStream()}>
                   request camera
                 </button>
-                <button class="button secondary" onClick={() => void refreshDevices()}>
-                  refresh list
+              </Show>
+
+              <div class="camera-controls">
+                <label class="field camera-device-field">
+                  <span>device</span>
+                  <select
+                    value={selectedDeviceId() ?? ''}
+                    disabled={!canUseCameraPicker()}
+                    onChange={(event) => handleDeviceSelection(event.currentTarget.value)}
+                  >
+                    <Show when={selectedDeviceMissing()}>
+                      <option value={selectedDeviceId()!}>Unavailable camera</option>
+                    </Show>
+                    <For each={devices()}>
+                      {(device) => (
+                        <option value={device.deviceId}>
+                          {device.label || `camera ${device.deviceId.slice(0, 6)}`}
+                        </option>
+                      )}
+                    </For>
+                  </select>
+                </label>
+
+                <button
+                  class="button secondary icon-only"
+                  title="Refresh cameras"
+                  disabled={!canUseCameraPicker()}
+                  onClick={() => void refreshDevices()}
+                >
+                  ↻
+                </button>
+
+                <button
+                  class="button secondary camera-action"
+                  disabled={!canUseCameraPicker() || !selectedDeviceAvailable()}
+                  onClick={handleCameraAction}
+                >
+                  {cameraActionLabel()}
                 </button>
               </div>
 
-              <label class="field">
-                <span>device</span>
-                <select
-                  value={selectedDeviceId() ?? ''}
-                  onChange={(event) => setSelectedDeviceId(event.currentTarget.value)}
-                >
-                  <For each={devices()}>
-                    {(device) => (
-                      <option value={device.deviceId}>
-                        {device.label || `camera ${device.deviceId.slice(0, 6)}`}
-                      </option>
-                    )}
-                  </For>
-                </select>
-              </label>
+              <Show when={selectedDeviceId() && !selectedDeviceAvailable()}>
+                <p>Selected camera is unavailable.</p>
+              </Show>
 
-              <button class="button secondary" onClick={() => void startStream(selectedDeviceId())}>
-                reconnect selected camera
-              </button>
+              <div class="status-panel">
+                <strong>Resolution</strong>
+                <span>
+                  camera {cameraResolution().width || 0}×{cameraResolution().height || 0}
+                </span>
+                <span>
+                  processing {frameSize().width}×{frameSize().height}
+                </span>
+              </div>
             </div>
           </AccordionSection>
 
-          <AccordionSection id="corners" title="corners" active={activeSection() === 'corners'} onToggle={toggleSection}>
+          <AccordionSection
+            id="corners"
+            title="corners"
+            active={activeSection() === 'corners'}
+            disabled={!cameraOnline()}
+            onToggle={toggleSection}
+          >
             <div class="stack">
               <p>Click up to four corners directly on the viewer. Drag an existing corner to refine.</p>
               <div class="control-row">
@@ -935,17 +1609,36 @@ function App() {
             </div>
           </AccordionSection>
 
-          <AccordionSection id="colors" title="colors" active={activeSection() === 'colors'} onToggle={toggleSection}>
+          <AccordionSection
+            id="colors"
+            title="colors"
+            active={activeSection() === 'colors'}
+            disabled={!cameraOnline()}
+            onToggle={toggleSection}
+          >
             <div class="stack">
+              <label class="checkbox">
+                <input
+                  type="checkbox"
+                  checked={processingEnabled()}
+                  onChange={(event) => setProcessingEnabled(event.currentTarget.checked)}
+                />
+                <span>use color and morphology processing</span>
+              </label>
+
               <p>Left pane is the perspective-corrected source crop. Click it to add a sampled color. Right pane is the processed mask.</p>
 
               <div class="control-row">
-                <button class="button secondary" disabled={colorFilters().length === 0} onClick={() => setColorFilters([])}>
+                <button
+                  class="button secondary"
+                  disabled={!processingEnabled() || colorFilters().length === 0}
+                  onClick={() => setColorFilters([])}
+                >
                   clear colors
                 </button>
               </div>
 
-              <div class="color-list">
+              <div class={`color-list ${processingEnabled() ? '' : 'disabled-panel'}`}>
                 <For each={colorFilters()}>
                   {(filter) => (
                     <div class="color-item">
@@ -967,6 +1660,7 @@ function App() {
                           min="0"
                           max="180"
                           value={filter.rgbTolerance}
+                          disabled={!processingEnabled()}
                           onInput={(event) =>
                             updateColorFilter(filter.id, {
                               rgbTolerance: Number(event.currentTarget.value),
@@ -982,6 +1676,7 @@ function App() {
                           min="0"
                           max="100"
                           value={filter.hsvTolerance}
+                          disabled={!processingEnabled()}
                           onInput={(event) =>
                             updateColorFilter(filter.id, {
                               hsvTolerance: Number(event.currentTarget.value),
@@ -1004,6 +1699,7 @@ function App() {
                   min="0"
                   max="255"
                   value={threshold()}
+                  disabled={!processingEnabled()}
                   onInput={(event) => setThreshold(Number(event.currentTarget.value))}
                 />
                 <strong>{threshold()}</strong>
@@ -1013,6 +1709,7 @@ function App() {
                 <input
                   type="checkbox"
                   checked={invert()}
+                  disabled={!processingEnabled()}
                   onChange={(event) => setInvert(event.currentTarget.checked)}
                 />
                 <span>treat darker pixels as ink when no colors are selected</span>
@@ -1020,13 +1717,66 @@ function App() {
             </div>
           </AccordionSection>
 
-          <AccordionSection id="zones" title="zones" active={activeSection() === 'zones'} onToggle={toggleSection}>
+          <AccordionSection
+            id="morphology"
+            title="morphology"
+            active={activeSection() === 'morphology'}
+            disabled={!cameraOnline() || !processingEnabled()}
+            onToggle={toggleSection}
+          >
+            <div class="stack">
+              <label class="field">
+                <span>erosion</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="4"
+                  value={morphology().erode}
+                  onInput={(event) => updateMorphology({ erode: Number(event.currentTarget.value) })}
+                />
+                <strong>{morphology().erode}</strong>
+              </label>
+
+              <label class="field">
+                <span>dilation</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="4"
+                  value={morphology().dilate}
+                  onInput={(event) => updateMorphology({ dilate: Number(event.currentTarget.value) })}
+                />
+                <strong>{morphology().dilate}</strong>
+              </label>
+            </div>
+          </AccordionSection>
+
+          <AccordionSection
+            id="zones"
+            title="zones"
+            active={activeSection() === 'zones'}
+            disabled={!cameraOnline()}
+            onToggle={toggleSection}
+          >
             <div class="stack">
               <div class="control-row">
                 <button class={`button ${drawMode() ? 'active' : ''}`} onClick={() => setDrawMode(!drawMode())}>
                   {drawMode() ? 'drawing' : 'new zone'}
                 </button>
+                <button
+                  class="button secondary"
+                  disabled={paddleStatus() === 'loading' || paddleStatus() === 'running'}
+                  onClick={() => void autoDetectPaddleZones()}
+                >
+                  auto-detect zones
+                </button>
                 <span>{zones().length} live</span>
+              </div>
+
+              <div class={`status-panel paddle-panel ${paddleStatus() === 'failed' ? 'failed' : ''}`}>
+                <strong>PaddleOCR {paddleStatus()}</strong>
+                <span class="paddle-message">{paddleMessage()}</span>
+                <span class="paddle-metrics">{describePaddleMetrics(paddleMetrics())}</span>
               </div>
 
               <div class="zone-list">
@@ -1042,6 +1792,24 @@ function App() {
                         value={zone.label}
                         onInput={(event) => updateZoneLabel(zone.id, event.currentTarget.value)}
                       />
+                      <select
+                        value={zone.ocrEngine ?? 'glyph'}
+                        onChange={(event) =>
+                          updateZoneEngine(zone.id, event.currentTarget.value as 'glyph' | 'paddle' | 'mnist')}
+                      >
+                        <option value="glyph">lexicon</option>
+                        <option value="paddle">paddle</option>
+                        <option value="mnist">mnist</option>
+                      </select>
+                      <select
+                        value={zone.lexiconGroupId ?? DEFAULT_LEXICON_GROUP_ID}
+                        disabled={!isLexiconZone(zone)}
+                        onChange={(event) => updateZoneLexiconGroup(zone.id, event.currentTarget.value)}
+                      >
+                        <For each={lexiconGroups()}>
+                          {(group) => <option value={group.id}>{group.name}</option>}
+                        </For>
+                      </select>
                       <button class="button secondary small" onClick={() => removeZone(zone.id)}>
                         delete
                       </button>
@@ -1055,11 +1823,31 @@ function App() {
             </div>
           </AccordionSection>
 
-          <AccordionSection id="lexicon" title="lexicon" active={activeSection() === 'lexicon'} onToggle={toggleSection}>
+          <AccordionSection
+            id="lexicon"
+            title="lexicon"
+            active={activeSection() === 'lexicon'}
+            disabled={!cameraOnline()}
+            onToggle={toggleSection}
+          >
             <div class="stack">
               <div class="control-row">
+                <label class="field compact-field">
+                  <span>scan into</span>
+                  <select
+                    value={selectedLexiconGroupId()}
+                    onChange={(event) => setSelectedLexiconGroupId(event.currentTarget.value)}
+                  >
+                    <For each={lexiconGroups()}>
+                      {(group) => <option value={group.id}>{group.name}</option>}
+                    </For>
+                  </select>
+                </label>
                 <button class="button" disabled={!selectedZone()} onClick={detectGlyphsForSelectedZone}>
                   detect glyphs
+                </button>
+                <button class="button secondary" onClick={addLexiconGroup}>
+                  new group
                 </button>
                 <button class="button secondary" disabled={lexicon().length === 0} onClick={() => setLexicon([])}>
                   clear lexicon
@@ -1068,9 +1856,32 @@ function App() {
 
               <p>
                 {selectedZone()
-                  ? `Selected zone: ${selectedZone()!.label}`
+                  ? `Selected zone: ${selectedZone()!.label}; scanning into ${selectedGroupName()}`
                   : 'Select a zone in the viewer before detecting glyphs.'}
               </p>
+
+              <div class="group-list">
+                <For each={lexiconGroups()}>
+                  {(group) => (
+                    <div class={selectedLexiconGroupId() === group.id ? 'group-item selected' : 'group-item'}>
+                      <input
+                        value={group.name}
+                        onInput={(event) => renameLexiconGroup(group.id, event.currentTarget.value)}
+                      />
+                      <span>
+                        {lexicon().filter((glyph) => (glyph.groupId ?? DEFAULT_LEXICON_GROUP_ID) === group.id).length}
+                      </span>
+                      <button
+                        class="button secondary small"
+                        disabled={group.id === DEFAULT_LEXICON_GROUP_ID}
+                        onClick={() => removeLexiconGroup(group.id)}
+                      >
+                        remove
+                      </button>
+                    </div>
+                  )}
+                </For>
+              </div>
 
               <div class="candidate-grid">
                 <For each={candidateGlyphs()}>
@@ -1100,7 +1911,7 @@ function App() {
               </div>
 
               <div class="saved-grid">
-                <For each={lexicon()}>
+                <For each={selectedGroupTemplates()}>
                   {(glyph) => (
                     <div class="saved-card">
                       <PixelPreview pixels={glyph.pixels} width={glyph.width} height={glyph.height} title={glyph.letter} />
@@ -1115,23 +1926,99 @@ function App() {
             </div>
           </AccordionSection>
 
-          <AccordionSection id="output" title="output" active={activeSection() === 'output'} onToggle={toggleSection}>
+          <AccordionSection
+            id="output"
+            title="output"
+            active={activeSection() === 'output'}
+            disabled={!cameraOnline()}
+            onToggle={toggleSection}
+          >
             <div class="stack">
-              <Show when={supportsFileAccess()} fallback={<p>This browser does not expose the File System Access API.</p>}>
-                <div class="control-row">
-                  <button class="button" onClick={() => void chooseOutputDirectory()}>
-                    pick folder
+              <div class="output-list">
+                <For each={outputTargets()}>
+                  {(target, index) => (
+                    <div class={`output-item ${target.enabled ? '' : 'paused'}`}>
+                      <label class="floating-field">
+                        <span>
+                          {target.type === 'directory'
+                            ? `Folders ${index() + 1} *`
+                            : target.type === 'file'
+                              ? `Files ${index() + 1} *`
+                              : `URLs ${index() + 1} *`}
+                        </span>
+                        <input
+                          readonly={target.type !== 'webhook'}
+                          value={target.type === 'webhook' ? target.url : target.name}
+                          placeholder={target.type === 'webhook' ? 'https://www.example.com/ocr' : undefined}
+                          onInput={(event) => updateWebhookUrl(target.id, event.currentTarget.value)}
+                        />
+                      </label>
+
+                      <div class="output-actions">
+                        <button class="icon-button" title={target.enabled ? 'Pause output' : 'Resume output'} onClick={() => toggleOutputTarget(target.id)}>
+                          {target.enabled ? 'II' : '▶'}
+                        </button>
+                        <button class="icon-button danger" title="Delete output" onClick={() => removeOutputTarget(target.id)}>
+                          ×
+                        </button>
+                      </div>
+
+                      <span class="output-status">
+                        {target.enabled ? 'live' : 'paused'} · {outputMessages()[target.id] ?? 'Waiting.'}
+                      </span>
+                    </div>
+                  )}
+                </For>
+
+                <Show when={outputTargets().length === 0}>
+                  <p>No output destinations.</p>
+                </Show>
+              </div>
+
+              <div class="control-row">
+                <Show when={supportsFileAccess()}>
+                  <button class="button add-button" onClick={() => void addOutputDirectory()}>
+                    <span>+</span>
+                    <span>Add Folder</span>
                   </button>
-                  <button class="button secondary" onClick={() => void chooseOutputFile()}>
-                    pick file
+                  <button class="button add-button secondary" onClick={() => void addOutputFile()}>
+                    <span>+</span>
+                    <span>Add File</span>
                   </button>
-                </div>
+                </Show>
+                <button class="button add-button secondary" onClick={addWebhookOutput}>
+                  <span>+</span>
+                  <span>Add URL</span>
+                </button>
+              </div>
+
+              <Show when={!supportsFileAccess()}>
+                <p>Folder and file outputs require the File System Access API.</p>
               </Show>
-              <p>{outputMessage()}</p>
             </div>
           </AccordionSection>
         </aside>
       </main>
+
+      <Show when={showCameraRecovery()}>
+        <div class="modal-backdrop" role="presentation">
+          <section class="camera-recovery-modal" role="dialog" aria-modal="true" aria-labelledby="camera-recovery-title">
+            <h2 id="camera-recovery-title">Camera setup unavailable</h2>
+            <p>
+              The saved camera setup could not be reopened. Plug the camera back in and refresh, or reset the stored
+              app settings.
+            </p>
+            <div class="modal-actions">
+              <button class="button danger" onClick={resetStoredSettings}>
+                Reset Settings
+              </button>
+              <button class="button secondary" onClick={() => void retryStoredCameraSetup()}>
+                Refresh
+              </button>
+            </div>
+          </section>
+        </div>
+      </Show>
 
       <video
         ref={video}

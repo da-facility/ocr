@@ -1,4 +1,13 @@
-import type { CandidateGlyph, ColorFilter, GlyphTemplate, Point, ProcessedFrame, Zone } from './types'
+import type {
+  CandidateGlyph,
+  ColorFilter,
+  DigitDetection,
+  GlyphTemplate,
+  MorphologySettings,
+  Point,
+  ProcessedFrame,
+  Zone,
+} from './types'
 
 type RectGlyph = {
   x: number
@@ -195,12 +204,27 @@ export function processFrame(
   threshold: number,
   invert: boolean,
   colorFilters: ColorFilter[] = [],
+  morphology: MorphologySettings = { erode: 0, dilate: 0 },
+  processingEnabled = true,
 ): ProcessedFrame {
   const transformed =
     points.length === 4 ? warpPerspective(source, points, source.width, source.height) : source
   const sourceRgba = Uint8ClampedArray.from(transformed.data)
-  const rgba = new Uint8ClampedArray(transformed.width * transformed.height * 4)
+  const rgba = processingEnabled
+    ? new Uint8ClampedArray(transformed.width * transformed.height * 4)
+    : Uint8ClampedArray.from(sourceRgba)
   const binary = new Uint8ClampedArray(transformed.width * transformed.height)
+
+  if (!processingEnabled) {
+    return {
+      width: transformed.width,
+      height: transformed.height,
+      sourceRgba,
+      rgba,
+      binary,
+      timestamp: performance.now(),
+    }
+  }
 
   for (let index = 0; index < transformed.data.length; index += 4) {
     const pixelIndex = index / 4
@@ -236,10 +260,17 @@ export function processFrame(
     const value = on ? 255 : 0
 
     binary[pixelIndex] = value
-    rgba[index] = value
-    rgba[index + 1] = value
-    rgba[index + 2] = value
-    rgba[index + 3] = 255
+  }
+
+  applyMorphology(binary, transformed.width, transformed.height, morphology)
+
+  for (let index = 0; index < binary.length; index += 1) {
+    const value = binary[index]
+    const rgbaOffset = index * 4
+    rgba[rgbaOffset] = value
+    rgba[rgbaOffset + 1] = value
+    rgba[rgbaOffset + 2] = value
+    rgba[rgbaOffset + 3] = 255
   }
 
   return {
@@ -250,6 +281,73 @@ export function processFrame(
     binary,
     timestamp: performance.now(),
   }
+}
+
+function applyMorphology(
+  binary: Uint8ClampedArray,
+  width: number,
+  height: number,
+  settings: MorphologySettings,
+) {
+  for (let index = 0; index < settings.erode; index += 1) {
+    binary.set(erodeBinary(binary, width, height))
+  }
+
+  for (let index = 0; index < settings.dilate; index += 1) {
+    binary.set(dilateBinary(binary, width, height))
+  }
+}
+
+function erodeBinary(binary: Uint8ClampedArray, width: number, height: number) {
+  const output = new Uint8ClampedArray(binary.length)
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = y * width + x
+      let keep = binary[offset] > 0
+
+      for (let dy = -1; dy <= 1 && keep; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height || binary[ny * width + nx] === 0) {
+            keep = false
+            break
+          }
+        }
+      }
+
+      output[offset] = keep ? 255 : 0
+    }
+  }
+
+  return output
+}
+
+function dilateBinary(binary: Uint8ClampedArray, width: number, height: number) {
+  const output = new Uint8ClampedArray(binary.length)
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = y * width + x
+      let on = false
+
+      for (let dy = -1; dy <= 1 && !on; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const nx = x + dx
+          const ny = y + dy
+          if (nx >= 0 && ny >= 0 && nx < width && ny < height && binary[ny * width + nx] > 0) {
+            on = true
+            break
+          }
+        }
+      }
+
+      output[offset] = on ? 255 : 0
+    }
+  }
+
+  return output
 }
 
 export function sampleColor(frame: ProcessedFrame, x: number, y: number) {
@@ -517,6 +615,204 @@ function extractZone(zone: Zone, binary: Uint8ClampedArray, width: number, heigh
   }
 }
 
+function extractSourceZone(zone: Zone, frame: ProcessedFrame) {
+  const x = clamp(Math.floor(zone.x), 0, frame.width - 1)
+  const y = clamp(Math.floor(zone.y), 0, frame.height - 1)
+  const width = clamp(Math.floor(zone.width), 1, frame.width - x)
+  const height = clamp(Math.floor(zone.height), 1, frame.height - y)
+  const rgba = new Uint8ClampedArray(width * height * 4)
+
+  for (let row = 0; row < height; row += 1) {
+    const sourceOffset = ((y + row) * frame.width + x) * 4
+    const targetOffset = row * width * 4
+    rgba.set(frame.sourceRgba.slice(sourceOffset, sourceOffset + width * 4), targetOffset)
+  }
+
+  return { x, y, width, height, rgba }
+}
+
+function thresholdSourceToBinary(
+  rgba: Uint8ClampedArray,
+  width: number,
+  height: number,
+) {
+  const luminance = new Float32Array(width * height)
+  let min = 255
+  let max = 0
+
+  for (let index = 0; index < rgba.length; index += 4) {
+    const value = 0.299 * rgba[index] + 0.587 * rgba[index + 1] + 0.114 * rgba[index + 2]
+    const pixel = index / 4
+    luminance[pixel] = value
+    min = Math.min(min, value)
+    max = Math.max(max, value)
+  }
+
+  const threshold = min + (max - min) * 0.58
+  const binary = new Uint8ClampedArray(width * height)
+
+  for (let index = 0; index < luminance.length; index += 1) {
+    binary[index] = luminance[index] >= threshold ? 255 : 0
+  }
+
+  return binary
+}
+
+function hasBinaryPixels(binary: Uint8ClampedArray) {
+  for (let index = 0; index < binary.length; index += 1) {
+    if (binary[index] > 0) {
+      return true
+    }
+  }
+
+  return false
+}
+
+function mergeColonDots(glyphs: RectGlyph[], binary: Uint8ClampedArray, width: number) {
+  const merged: RectGlyph[] = []
+  const used = new Set<number>()
+
+  for (let index = 0; index < glyphs.length; index += 1) {
+    if (used.has(index)) {
+      continue
+    }
+
+    const first = glyphs[index]
+    const pairIndex = glyphs.findIndex((candidate, candidateIndex) => {
+      if (candidateIndex <= index || used.has(candidateIndex)) {
+        return false
+      }
+
+      const centerDelta = Math.abs(first.x + first.width / 2 - (candidate.x + candidate.width / 2))
+      const minY = Math.min(first.y, candidate.y)
+      const maxY = Math.max(first.y + first.height, candidate.y + candidate.height)
+      const mergedHeight = maxY - minY
+      const mergedWidth = Math.max(first.x + first.width, candidate.x + candidate.width) - Math.min(first.x, candidate.x)
+      const gap = Math.max(first.y, candidate.y) - Math.min(first.y + first.height, candidate.y + candidate.height)
+
+      return (
+        centerDelta <= Math.max(first.width, candidate.width) * 0.75 &&
+        mergedWidth <= mergedHeight * 0.55 &&
+        gap > 0 &&
+        gap <= mergedHeight * 0.55
+      )
+    })
+
+    if (pairIndex < 0) {
+      merged.push(first)
+      used.add(index)
+      continue
+    }
+
+    const second = glyphs[pairIndex]
+    const minX = Math.min(first.x, second.x)
+    const minY = Math.min(first.y, second.y)
+    const maxX = Math.max(first.x + first.width, second.x + second.width)
+    const maxY = Math.max(first.y + first.height, second.y + second.height)
+    const glyphWidth = maxX - minX
+    const glyphHeight = maxY - minY
+
+    merged.push({
+      x: minX,
+      y: minY,
+      width: glyphWidth,
+      height: glyphHeight,
+      area: first.area + second.area,
+      pixels: cropBinary(binary, width, minX, minY, glyphWidth, glyphHeight),
+    })
+
+    used.add(index)
+    used.add(pairIndex)
+  }
+
+  return merged.sort((a, b) => a.x - b.x)
+}
+
+const DIGIT_SEGMENTS: Record<string, number[]> = {
+  '0': [1, 1, 1, 0, 1, 1, 1],
+  '1': [0, 0, 1, 0, 0, 1, 0],
+  '2': [1, 0, 1, 1, 1, 0, 1],
+  '3': [1, 0, 1, 1, 0, 1, 1],
+  '4': [0, 1, 1, 1, 0, 1, 0],
+  '5': [1, 1, 0, 1, 0, 1, 1],
+  '6': [1, 1, 0, 1, 1, 1, 1],
+  '7': [1, 0, 1, 0, 0, 1, 0],
+  '8': [1, 1, 1, 1, 1, 1, 1],
+  '9': [1, 1, 1, 1, 0, 1, 1],
+}
+
+function segmentRatio(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number,
+  left: number,
+  top: number,
+  right: number,
+  bottom: number,
+) {
+  const x0 = clamp(Math.floor(left * width), 0, width - 1)
+  const y0 = clamp(Math.floor(top * height), 0, height - 1)
+  const x1 = clamp(Math.ceil(right * width), x0 + 1, width)
+  const y1 = clamp(Math.ceil(bottom * height), y0 + 1, height)
+  let on = 0
+  let total = 0
+
+  for (let y = y0; y < y1; y += 1) {
+    for (let x = x0; x < x1; x += 1) {
+      total += 1
+      if (pixels[y * width + x] > 0) {
+        on += 1
+      }
+    }
+  }
+
+  return total ? on / total : 0
+}
+
+function classifyDigitGlyph(glyph: RectGlyph) {
+  const aspect = glyph.width / glyph.height
+  const fill = glyph.area / (glyph.width * glyph.height)
+
+  if (aspect <= 0.42 && fill <= 0.5) {
+    const upper = segmentRatio(glyph.pixels, glyph.width, glyph.height, 0.1, 0.05, 0.9, 0.4)
+    const middle = segmentRatio(glyph.pixels, glyph.width, glyph.height, 0.1, 0.4, 0.9, 0.6)
+    const lower = segmentRatio(glyph.pixels, glyph.width, glyph.height, 0.1, 0.6, 0.9, 0.95)
+
+    if (upper > 0.12 && lower > 0.12 && middle < Math.max(upper, lower) * 0.65) {
+      return ':'
+    }
+
+    return '1'
+  }
+
+  const ratios = [
+    segmentRatio(glyph.pixels, glyph.width, glyph.height, 0.2, 0.0, 0.8, 0.2),
+    segmentRatio(glyph.pixels, glyph.width, glyph.height, 0.0, 0.12, 0.35, 0.48),
+    segmentRatio(glyph.pixels, glyph.width, glyph.height, 0.65, 0.12, 1.0, 0.48),
+    segmentRatio(glyph.pixels, glyph.width, glyph.height, 0.2, 0.4, 0.8, 0.6),
+    segmentRatio(glyph.pixels, glyph.width, glyph.height, 0.0, 0.52, 0.35, 0.88),
+    segmentRatio(glyph.pixels, glyph.width, glyph.height, 0.65, 0.52, 1.0, 0.88),
+    segmentRatio(glyph.pixels, glyph.width, glyph.height, 0.2, 0.8, 0.8, 1.0),
+  ]
+  const active = ratios.map((ratio) => (ratio >= 0.16 ? 1 : 0))
+  let best = '?'
+  let bestScore = Number.POSITIVE_INFINITY
+
+  for (const [digit, expected] of Object.entries(DIGIT_SEGMENTS)) {
+    const score = expected.reduce((sum, value, index) => {
+      const delta = value === active[index] ? 0 : 1
+      return sum + delta + (value ? Math.max(0, 0.28 - ratios[index]) : Math.max(0, ratios[index] - 0.18))
+    }, 0)
+
+    if (score < bestScore) {
+      best = digit
+      bestScore = score
+    }
+  }
+
+  return bestScore <= 3.2 ? best : '?'
+}
+
 export function detectCandidates(frame: ProcessedFrame, zone: Zone): CandidateGlyph[] {
   const region = extractZone(zone, frame.binary, frame.width, frame.height)
   const glyphs = detectGlyphRects(region.binary, region.width, region.height)
@@ -532,6 +828,41 @@ export function detectCandidates(frame: ProcessedFrame, zone: Zone): CandidateGl
     normalizedWidth: TEMPLATE_WIDTH,
     normalizedHeight: TEMPLATE_HEIGHT,
   }))
+}
+
+export function recognizeDigitZone(frame: ProcessedFrame, zone: Zone) {
+  const region = hasBinaryPixels(frame.binary)
+    ? extractZone(zone, frame.binary, frame.width, frame.height)
+    : (() => {
+        const source = extractSourceZone(zone, frame)
+
+        return {
+          x: source.x,
+          y: source.y,
+          width: source.width,
+          height: source.height,
+          binary: thresholdSourceToBinary(source.rgba, source.width, source.height),
+        }
+      })()
+  const minArea = Math.max(8, Math.floor(region.width * region.height * 0.0004))
+  const minHeight = Math.max(6, Math.floor(region.height * 0.08))
+  const glyphs = mergeColonDots(
+    detectGlyphRects(region.binary, region.width, region.height, minArea),
+    region.binary,
+    region.width,
+  ).filter((glyph) => glyph.area >= minArea && glyph.height >= minHeight)
+  const detections: DigitDetection[] = glyphs.map((glyph) => ({
+    x: region.x + glyph.x,
+    y: region.y + glyph.y,
+    width: glyph.width,
+    height: glyph.height,
+    label: classifyDigitGlyph(glyph),
+  }))
+
+  return {
+    text: detections.map((detection) => detection.label).join(''),
+    detections,
+  }
 }
 
 export function recognizeZone(frame: ProcessedFrame, zone: Zone, templates: GlyphTemplate[]) {

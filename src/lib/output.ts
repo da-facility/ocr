@@ -29,7 +29,7 @@ async function writeFile(handle: FileSystemFileHandle, content: string) {
   await writable.close()
 }
 
-export async function pickDirectoryTarget() {
+export async function pickDirectoryTarget(id: string) {
   if (!window.showDirectoryPicker) {
     throw new Error('Directory access is not available in this browser.')
   }
@@ -39,13 +39,15 @@ export async function pickDirectoryTarget() {
   } as never)
 
   return {
+    id,
     type: 'directory' as const,
+    enabled: true,
     handle,
     name: handle.name,
   }
 }
 
-export async function pickFileTarget() {
+export async function pickFileTarget(id: string) {
   if (!window.showSaveFilePicker) {
     throw new Error('File access is not available in this browser.')
   }
@@ -63,20 +65,60 @@ export async function pickFileTarget() {
   } as never)
 
   return {
+    id,
     type: 'file' as const,
+    enabled: true,
     handle,
     name: handle.name,
   }
 }
 
-export async function writeOutputFiles(
+function serializeOutput(zones: Zone[], results: Record<string, string>) {
+  return {
+    timestamp: new Date().toISOString(),
+    zones: zones.map((zone) => ({
+      id: zone.id,
+      label: zone.label,
+      text: results[zone.id] ?? '',
+    })),
+  }
+}
+
+export async function writeOutputTarget(
   target: OutputTarget,
   zones: Zone[],
   results: Record<string, string>,
   cache: Map<string, string>,
 ) {
-  if (!target) {
-    return 'No output target selected.'
+  if (!target.enabled) {
+    return 'Paused.'
+  }
+
+  if (target.type === 'webhook') {
+    const url = target.url.trim()
+    if (!url) {
+      return 'URL required.'
+    }
+
+    const payload = JSON.stringify(serializeOutput(zones, results))
+    if (cache.get('payload') === payload) {
+      return 'No changes to send.'
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: payload,
+    })
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`)
+    }
+
+    cache.set('payload', payload)
+    return 'Sent.'
   }
 
   const allowed = await ensureWritePermission(target.handle)
