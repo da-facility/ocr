@@ -30,8 +30,23 @@ async function writeFile(handle: FileSystemFileHandle, content: string) {
 }
 
 export async function pickDirectoryTarget(id: string) {
+  if (window.electronOutput) {
+    const selected = await window.electronOutput.pickDirectory()
+    if (!selected) {
+      throw new Error('Directory selection was cancelled.')
+    }
+
+    return {
+      id,
+      type: 'electron-directory' as const,
+      enabled: true,
+      path: selected.path,
+      name: selected.name,
+    }
+  }
+
   if (!window.showDirectoryPicker) {
-    throw new Error('Directory access is not available in this browser.')
+    return pickBrowserStorageDirectoryTarget(id)
   }
 
   const handle = await window.showDirectoryPicker({
@@ -47,9 +62,41 @@ export async function pickDirectoryTarget(id: string) {
   }
 }
 
+export async function pickBrowserStorageDirectoryTarget(id: string) {
+  if (!navigator.storage?.getDirectory) {
+    throw new Error('Browser storage output is not available in this browser.')
+  }
+
+  const root = await navigator.storage.getDirectory()
+  const handle = await root.getDirectoryHandle('ocr-output', { create: true })
+
+  return {
+    id,
+    type: 'opfs-directory' as const,
+    enabled: true,
+    handle,
+    name: 'Browser Store / ocr-output',
+  }
+}
+
 export async function pickFileTarget(id: string) {
+  if (window.electronOutput) {
+    const selected = await window.electronOutput.pickFile()
+    if (!selected) {
+      throw new Error('File selection was cancelled.')
+    }
+
+    return {
+      id,
+      type: 'electron-file' as const,
+      enabled: true,
+      path: selected.path,
+      name: selected.name,
+    }
+  }
+
   if (!window.showSaveFilePicker) {
-    throw new Error('File access is not available in this browser.')
+    return pickBrowserStorageFileTarget(id)
   }
 
   const handle = await window.showSaveFilePicker({
@@ -70,6 +117,24 @@ export async function pickFileTarget(id: string) {
     enabled: true,
     handle,
     name: handle.name,
+  }
+}
+
+export async function pickBrowserStorageFileTarget(id: string) {
+  if (!navigator.storage?.getDirectory) {
+    throw new Error('Browser storage output is not available in this browser.')
+  }
+
+  const root = await navigator.storage.getDirectory()
+  const directory = await root.getDirectoryHandle('ocr-output', { create: true })
+  const handle = await directory.getFileHandle('ocr-live.txt', { create: true })
+
+  return {
+    id,
+    type: 'opfs-file' as const,
+    enabled: true,
+    handle,
+    name: 'Browser Store / ocr-live.txt',
   }
 }
 
@@ -121,27 +186,33 @@ export async function writeOutputTarget(
     return 'Sent.'
   }
 
-  const allowed = await ensureWritePermission(target.handle)
-  if (!allowed) {
-    throw new Error('Write permission was denied.')
-  }
-
   const ordered = zones.map((zone) => ({
     zone,
     text: results[zone.id] ?? '',
     name: sanitizeFileName(zone.label || zone.id),
   }))
 
-  if (target.type === 'file') {
+  if (target.type === 'file' || target.type === 'opfs-file' || target.type === 'electron-file') {
     const content =
       ordered.map(({ zone, text }) => `${zone.label || zone.id}: ${text}`).join('\n') || 'No OCR zones configured.'
 
     if (cache.get('single-file') !== content) {
-      await writeFile(target.handle, content)
+      if (target.type === 'electron-file') {
+        await window.electronOutput?.writeFile(target.path, content)
+      } else {
+        const allowed = await ensureWritePermission(target.handle)
+        if (!allowed) {
+          throw new Error('Write permission was denied.')
+        }
+
+        await writeFile(target.handle, content)
+      }
       cache.set('single-file', content)
     }
 
-    return 'Single output file updated.'
+    return target.type === 'opfs-file'
+      ? 'Browser storage file updated.'
+      : 'Single output file updated.'
   }
 
   for (const entry of ordered) {
@@ -150,18 +221,38 @@ export async function writeOutputTarget(
       continue
     }
 
-    const handle = await target.handle.getFileHandle(fileName, { create: true })
-    await writeFile(handle, entry.text)
+    if (target.type === 'electron-directory') {
+      await window.electronOutput?.writeDirectoryFile(target.path, fileName, entry.text)
+    } else {
+      const allowed = await ensureWritePermission(target.handle)
+      if (!allowed) {
+        throw new Error('Write permission was denied.')
+      }
+
+      const handle = await target.handle.getFileHandle(fileName, { create: true })
+      await writeFile(handle, entry.text)
+    }
     cache.set(fileName, entry.text)
   }
 
   const summary = ordered.map(({ zone, text }) => `${zone.label || zone.id}: ${text}`).join('\n')
   const summaryName = 'ocr-live.txt'
   if (cache.get(summaryName) !== summary) {
-    const summaryHandle = await target.handle.getFileHandle(summaryName, { create: true })
-    await writeFile(summaryHandle, summary)
+    if (target.type === 'electron-directory') {
+      await window.electronOutput?.writeDirectoryFile(target.path, summaryName, summary)
+    } else {
+      const allowed = await ensureWritePermission(target.handle)
+      if (!allowed) {
+        throw new Error('Write permission was denied.')
+      }
+
+      const summaryHandle = await target.handle.getFileHandle(summaryName, { create: true })
+      await writeFile(summaryHandle, summary)
+    }
     cache.set(summaryName, summary)
   }
 
-  return `Updated ${ordered.length + 1} files in ${target.name}.`
+  return target.type === 'opfs-directory'
+    ? `Updated ${ordered.length + 1} files in browser storage.`
+    : `Updated ${ordered.length + 1} files in ${target.name}.`
 }

@@ -25,6 +25,12 @@ declare interface FileSystemFileHandle extends FileSystemHandle {
 
 declare interface FileSystemDirectoryHandle extends FileSystemHandle {
   readonly kind: 'directory'
+  getDirectoryHandle(
+    name: string,
+    options?: {
+      create?: boolean
+    },
+  ): Promise<FileSystemDirectoryHandle>
   getFileHandle(
     name: string,
     options?: {
@@ -45,4 +51,17 @@ declare interface Window {
   showSaveFilePicker?: (
     options?: unknown,
   ) => Promise<FileSystemFileHandle>
+}
+
+declare interface StorageManager {
+  getDirectory?: () => Promise<FileSystemDirectoryHandle>
+}
+
+declare interface Window {
+  electronOutput?: {
+    pickDirectory: () => Promise<{ path: string; name: string } | null>
+    pickFile: () => Promise<{ path: string; name: string } | null>
+    writeFile: (path: string, content: string) => Promise<void>
+    writeDirectoryFile: (directoryPath: string, fileName: string, content: string) => Promise<void>
+  }
 }

@@ -1,7 +1,7 @@
 {
   "name": "ocr",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
   "productName": "OCR Console",
   "description": "Camera OCR console for zone-based recognition.",
   "author": "DA Facility",

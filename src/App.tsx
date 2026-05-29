@@ -356,8 +356,13 @@ function App() {
   )
   const selectedGroupName = createMemo(() => groupName(lexiconGroups(), selectedLexiconGroupId()))
   const paddleFrameSource = createMemo(() => (processingEnabled() ? 'processed' : 'source'))
-  const supportsFileAccess = createMemo(
-    () => typeof window !== 'undefined' && (!!window.showDirectoryPicker || !!window.showSaveFilePicker),
+  const supportsNativeFileOutput = createMemo(
+    () =>
+      typeof window !== 'undefined' &&
+      (!!window.electronOutput || !!window.showDirectoryPicker || !!window.showSaveFilePicker),
+  )
+  const supportsBrowserStorageOutput = createMemo(
+    () => typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory,
   )
   const frameAspect = createMemo(() => frameSize().width / frameSize().height)
   const splitOrientation = createMemo<'horizontal' | 'vertical'>(() => {
@@ -1942,7 +1947,9 @@ function App() {
                         <span>
                           {target.type === 'directory'
                             ? `Folders ${index() + 1} *`
-                            : target.type === 'file'
+                            : target.type === 'electron-directory' || target.type === 'opfs-directory'
+                              ? `Folders ${index() + 1} *`
+                            : target.type === 'file' || target.type === 'electron-file' || target.type === 'opfs-file'
                               ? `Files ${index() + 1} *`
                               : `URLs ${index() + 1} *`}
                         </span>
@@ -1976,24 +1983,25 @@ function App() {
               </div>
 
               <div class="control-row">
-                <Show when={supportsFileAccess()}>
-                  <button class="button add-button" onClick={() => void addOutputDirectory()}>
-                    <span>+</span>
-                    <span>Add Folder</span>
-                  </button>
-                  <button class="button add-button secondary" onClick={() => void addOutputFile()}>
-                    <span>+</span>
-                    <span>Add File</span>
-                  </button>
-                </Show>
+                <button class="button add-button" onClick={() => void addOutputDirectory()}>
+                  <span>+</span>
+                  <span>Add Folder</span>
+                </button>
+                <button class="button add-button secondary" onClick={() => void addOutputFile()}>
+                  <span>+</span>
+                  <span>Add File</span>
+                </button>
                 <button class="button add-button secondary" onClick={addWebhookOutput}>
                   <span>+</span>
                   <span>Add URL</span>
                 </button>
               </div>
 
-              <Show when={!supportsFileAccess()}>
-                <p>Folder and file outputs require the File System Access API.</p>
+              <Show when={!supportsNativeFileOutput() && supportsBrowserStorageOutput()}>
+                <p>Folder and file outputs will use persistent browser storage on this platform.</p>
+              </Show>
+              <Show when={!supportsNativeFileOutput() && !supportsBrowserStorageOutput()}>
+                <p>This browser cannot write output files. Use URL output or the Windows app.</p>
               </Show>
             </div>
           </AccordionSection>

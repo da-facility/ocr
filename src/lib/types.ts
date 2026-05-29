@@ -82,9 +82,37 @@ export type OutputTarget =
     }
   | {
       id: string
+      type: 'opfs-directory'
+      enabled: boolean
+      handle: FileSystemDirectoryHandle
+      name: string
+    }
+  | {
+      id: string
+      type: 'electron-directory'
+      enabled: boolean
+      path: string
+      name: string
+    }
+  | {
+      id: string
       type: 'file'
       enabled: boolean
       handle: FileSystemFileHandle
+      name: string
+    }
+  | {
+      id: string
+      type: 'opfs-file'
+      enabled: boolean
+      handle: FileSystemFileHandle
+      name: string
+    }
+  | {
+      id: string
+      type: 'electron-file'
+      enabled: boolean
+      path: string
       name: string
     }
   | {
