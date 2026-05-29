@@ -46,7 +46,7 @@ export async function pickDirectoryTarget(id: string) {
   }
 
   if (!window.showDirectoryPicker) {
-    return pickBrowserStorageDirectoryTarget(id)
+    throw new Error('This browser cannot write folders to disk. Use Chrome/Edge desktop or the Windows app.')
   }
 
   const handle = await window.showDirectoryPicker({
@@ -59,23 +59,6 @@ export async function pickDirectoryTarget(id: string) {
     enabled: true,
     handle,
     name: handle.name,
-  }
-}
-
-export async function pickBrowserStorageDirectoryTarget(id: string) {
-  if (!navigator.storage?.getDirectory) {
-    throw new Error('Browser storage output is not available in this browser.')
-  }
-
-  const root = await navigator.storage.getDirectory()
-  const handle = await root.getDirectoryHandle('ocr-output', { create: true })
-
-  return {
-    id,
-    type: 'opfs-directory' as const,
-    enabled: true,
-    handle,
-    name: 'Browser Store / ocr-output',
   }
 }
 
@@ -96,7 +79,7 @@ export async function pickFileTarget(id: string) {
   }
 
   if (!window.showSaveFilePicker) {
-    return pickBrowserStorageFileTarget(id)
+    throw new Error('This browser cannot write files to disk. Use Chrome/Edge desktop or the Windows app.')
   }
 
   const handle = await window.showSaveFilePicker({
@@ -117,24 +100,6 @@ export async function pickFileTarget(id: string) {
     enabled: true,
     handle,
     name: handle.name,
-  }
-}
-
-export async function pickBrowserStorageFileTarget(id: string) {
-  if (!navigator.storage?.getDirectory) {
-    throw new Error('Browser storage output is not available in this browser.')
-  }
-
-  const root = await navigator.storage.getDirectory()
-  const directory = await root.getDirectoryHandle('ocr-output', { create: true })
-  const handle = await directory.getFileHandle('ocr-live.txt', { create: true })
-
-  return {
-    id,
-    type: 'opfs-file' as const,
-    enabled: true,
-    handle,
-    name: 'Browser Store / ocr-live.txt',
   }
 }
 
@@ -192,7 +157,7 @@ export async function writeOutputTarget(
     name: sanitizeFileName(zone.label || zone.id),
   }))
 
-  if (target.type === 'file' || target.type === 'opfs-file' || target.type === 'electron-file') {
+  if (target.type === 'file' || target.type === 'electron-file') {
     const content =
       ordered.map(({ zone, text }) => `${zone.label || zone.id}: ${text}`).join('\n') || 'No OCR zones configured.'
 
@@ -210,9 +175,7 @@ export async function writeOutputTarget(
       cache.set('single-file', content)
     }
 
-    return target.type === 'opfs-file'
-      ? 'Browser storage file updated.'
-      : 'Single output file updated.'
+    return 'Single output file updated.'
   }
 
   for (const entry of ordered) {
@@ -252,7 +215,5 @@ export async function writeOutputTarget(
     cache.set(summaryName, summary)
   }
 
-  return target.type === 'opfs-directory'
-    ? `Updated ${ordered.length + 1} files in browser storage.`
-    : `Updated ${ordered.length + 1} files in ${target.name}.`
+  return `Updated ${ordered.length + 1} files in ${target.name}.`
 }

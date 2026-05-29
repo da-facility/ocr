@@ -361,9 +361,6 @@ function App() {
       typeof window !== 'undefined' &&
       (!!window.electronOutput || !!window.showDirectoryPicker || !!window.showSaveFilePicker),
   )
-  const supportsBrowserStorageOutput = createMemo(
-    () => typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory,
-  )
   const frameAspect = createMemo(() => frameSize().width / frameSize().height)
   const splitOrientation = createMemo<'horizontal' | 'vertical'>(() => {
     const host = viewerHostSize()
@@ -1947,9 +1944,9 @@ function App() {
                         <span>
                           {target.type === 'directory'
                             ? `Folders ${index() + 1} *`
-                            : target.type === 'electron-directory' || target.type === 'opfs-directory'
+                            : target.type === 'electron-directory'
                               ? `Folders ${index() + 1} *`
-                            : target.type === 'file' || target.type === 'electron-file' || target.type === 'opfs-file'
+                            : target.type === 'file' || target.type === 'electron-file'
                               ? `Files ${index() + 1} *`
                               : `URLs ${index() + 1} *`}
                         </span>
@@ -1997,11 +1994,8 @@ function App() {
                 </button>
               </div>
 
-              <Show when={!supportsNativeFileOutput() && supportsBrowserStorageOutput()}>
-                <p>Folder and file outputs will use persistent browser storage on this platform.</p>
-              </Show>
-              <Show when={!supportsNativeFileOutput() && !supportsBrowserStorageOutput()}>
-                <p>This browser cannot write output files. Use URL output or the Windows app.</p>
+              <Show when={!supportsNativeFileOutput()}>
+                <p>This browser cannot open a disk file picker for live writes. Use Chrome/Edge desktop or the Windows app.</p>
               </Show>
             </div>
           </AccordionSection>

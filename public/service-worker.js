@@ -1,4 +1,4 @@
-const APP_CACHE_NAME = 'ocr-console-app-v3'
+const APP_CACHE_NAME = 'ocr-console-app-v4'
 const MODEL_CACHE_NAME = 'ocr-console-models-v1'
 const scopeUrl = new URL(self.registration.scope)
 const scopePath = scopeUrl.pathname.endsWith('/') ? scopeUrl.pathname : `${scopeUrl.pathname}/`

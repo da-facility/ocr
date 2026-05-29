@@ -53,10 +53,6 @@ declare interface Window {
   ) => Promise<FileSystemFileHandle>
 }
 
-declare interface StorageManager {
-  getDirectory?: () => Promise<FileSystemDirectoryHandle>
-}
-
 declare interface Window {
   electronOutput?: {
     pickDirectory: () => Promise<{ path: string; name: string } | null>
